@@ -1,0 +1,16 @@
+[package]
+name = "certlint"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[features]
+# Plants a one-past-the-end read in the DER reader. `make overread` builds
+# with it and requires the process to die of a bounds check; see README.
+plant_overread = []
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+debug-assertions = true
