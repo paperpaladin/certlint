@@ -4,6 +4,8 @@
 // the bignum, the path builder and the linter are all in this tree, because
 // the point of the exercise is the bytes.
 
+mod der;
+
 use std::process::ExitCode;
 
 // Exit codes. The suite asserts on the difference between them, so a new one
