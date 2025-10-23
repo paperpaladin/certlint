@@ -5,7 +5,9 @@
 // the point of the exercise is the bytes.
 
 mod der;
+mod pem;
 
+use std::io::Write;
 use std::process::ExitCode;
 
 // Exit codes. The suite asserts on the difference between them, so a new one
@@ -18,6 +20,7 @@ const USAGE: &str = "\
 usage: certlint [MODE] [OPTIONS] FILE...
 
   -a, --asn1        print the DER structure, one line per TLV
+      --der         write the first certificate out as DER
   -d, --dump        print the parsed certificate as key = value lines
   -v, --verify      build a path to a trust anchor and validate it
   -l, --lint        check against the CA/Browser Forum Baseline Requirements
@@ -34,6 +37,7 @@ usage: certlint [MODE] [OPTIONS] FILE...
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Asn1,
+    Der,
     Dump,
     Verify,
     Lint,
@@ -72,6 +76,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         };
         match arg {
             "-a" | "--asn1" => a.mode = Some(Mode::Asn1),
+            "--der" => a.mode = Some(Mode::Der),
             "-d" | "--dump" => a.mode = Some(Mode::Dump),
             "-v" | "--verify" => a.mode = Some(Mode::Verify),
             "-l" | "--lint" => a.mode = Some(Mode::Lint),
@@ -116,9 +121,27 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
 fn run(a: &Args) -> Result<u8, String> {
     for f in &a.files {
         let bytes = read_file(f)?;
-        println!("{}: {} bytes", f, bytes.len());
+        let certs = pem::certificates(&bytes).map_err(|e| format!("{}: {}", f, e))?;
+        match a.mode {
+            Some(Mode::Der) => {
+                // Check the framing before writing anything out: a file that
+                // is not one complete TLV is a malformed certificate, not a
+                // certificate we have not looked at yet.
+                der::Reader::new(&certs[0])
+                    .read_only_tlv()
+                    .map_err(|e| format!("{}: {}", f, e))?;
+                let mut out = std::io::stdout();
+                out.write_all(&certs[0]).map_err(|e| e.to_string())?;
+                out.flush().map_err(|e| e.to_string())?;
+            }
+            _ => {
+                for (i, c) in certs.iter().enumerate() {
+                    println!("{}: certificate {} is {} DER bytes", f, i, c.len());
+                }
+            }
+        }
     }
-    let _ = (&a.cas, &a.untrusted, &a.at, &a.purpose, a.max_paths, a.mode);
+    let _ = (&a.cas, &a.untrusted, &a.at, &a.purpose, a.max_paths);
     Ok(EXIT_OK)
 }
 

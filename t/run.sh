@@ -57,6 +57,15 @@ echo "    openssl:     $(openssl version | cut -d' ' -f1-2)"
 echo "    gnutls:      certtool $(certtool --version 2>/dev/null | head -1 | awk '{print $2}')"
 echo "    cryptography: $(python3 -c 'import cryptography;print(cryptography.__version__)')"
 
+C=$ROOT/t/corpus
+if [ ! -f "$C/.stamp" ] || [ "$HERE/mkcorpus.sh" -nt "$C/.stamp" ]; then
+    note "generating the corpus (openssl req, openssl x509 -req)"
+    sh "$HERE/mkcorpus.sh" || { echo "corpus generation failed" >&2; exit 2; }
+    touch "$C/.stamp"
+fi
+ncert=$(ls "$C"/*.pem | wc -l)
+note "corpus: $ncert certificates"
+
 note "command line"
 "$BIN" --help >/dev/null 2>&1 && ok "--help exits 0" || no "--help did not exit 0"
 "$BIN" --help 2>/dev/null | grep -q 'usage: certlint' \
@@ -70,6 +79,49 @@ note "command line"
     || no "an option missing its argument did not exit 2"
 "$BIN" "$W/absent.pem" >/dev/null 2>&1; [ $? -eq 1 ] \
     && ok "an unreadable file exits 1" || no "an unreadable file did not exit 1"
+
+note "PEM and base64 against openssl x509 -outform DER"
+n=0
+bad=0
+for f in "$C"/*.pem; do
+    openssl x509 -in "$f" -outform DER -out "$W/oracle.der" 2>/dev/null
+    "$BIN" --der "$f" > "$W/ours.der" 2>"$W/err" || { bad=$((bad+1)); continue; }
+    cmp -s "$W/oracle.der" "$W/ours.der" || { bad=$((bad+1)); echo "    $f differs"; }
+    n=$((n+1))
+done
+[ "$bad" -eq 0 ] && [ "$n" -eq "$ncert" ] \
+    && ok "every PEM decodes to the DER openssl writes ($n certificates)" \
+    || no "$bad of $ncert PEM files decoded to something else"
+
+# The same file as raw DER, to prove the no-BEGIN path is not the PEM path
+# with a different name.
+openssl x509 -in "$C/leaf-rsa.pem" -outform DER -out "$W/leaf.der"
+"$BIN" --der "$W/leaf.der" | cmp -s - "$W/leaf.der" \
+    && ok "a raw DER input passes through unchanged" \
+    || no "a raw DER input did not pass through unchanged"
+
+note "malformed PEM is refused"
+mal_refused=0
+mal_total=0
+try_mal() {  # try_mal DESCRIPTION FILE
+    mal_total=$((mal_total+1))
+    "$BIN" --der "$2" >/dev/null 2>&1
+    if [ $? -eq 1 ]; then mal_refused=$((mal_refused+1)); else echo "    accepted: $1"; fi
+}
+sed 's/^\(.\{10\}\)./\1!/' "$C/leaf-rsa.pem" | sed -n '2,$p' > "$W/badchar.pem"
+printf -- '-----BEGIN CERTIFICATE-----\n' > "$W/badchar2.pem"
+cat "$W/badchar.pem" >> "$W/badchar2.pem"
+printf -- '-----END CERTIFICATE-----\n' >> "$W/badchar2.pem"
+try_mal "a base64 character outside the alphabet" "$W/badchar2.pem"
+grep -v -- '-----END' "$C/leaf-rsa.pem" > "$W/unclosed.pem"
+try_mal "a block that is never closed" "$W/unclosed.pem"
+printf -- '-----BEGIN CERTIFICATE-----\nQUJD\n-----END PRIVATE KEY-----\n' > "$W/mismatch.pem"
+try_mal "an END label that does not match its BEGIN" "$W/mismatch.pem"
+head -c 200 "$W/leaf.der" > "$W/trunc.der"
+try_mal "a truncated DER certificate" "$W/trunc.der"
+[ "$mal_refused" -eq "$mal_total" ] \
+    && ok "$mal_refused of $mal_total malformed inputs refused with exit 1" \
+    || no "only $mal_refused of $mal_total malformed inputs were refused"
 
 note "source invariants"
 n=$(cat "$ROOT"/src/*.rs | grep -c 'unsafe')

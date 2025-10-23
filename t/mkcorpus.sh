@@ -1,0 +1,98 @@
+#!/bin/sh
+# Generate the certificate corpus with openssl.
+#
+# Nothing in here is an oracle: it is the source of certificates that nobody
+# in this repository wrote by hand. The oracles are the three parsers the
+# suite compares against afterwards.
+#
+# Re-run only when this script is newer than the stamp, because RSA key
+# generation dominates the suite's runtime.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+OUT=$HERE/corpus
+mkdir -p "$OUT"
+cd "$OUT"
+
+# A serial with the 64 bits of entropy the Baseline Requirements want.
+bigserial() { echo "0x00$(openssl rand -hex 16)"; }
+
+req() {  # req SUBJ KEYSPEC OUT
+    openssl req -new -newkey "$2" -nodes -keyout "$3.key" -out "$3.csr" \
+        -subj "$1" >/dev/null 2>&1
+}
+
+selfsign() {  # selfsign NAME SUBJ KEYSPEC EXTFILE DAYS
+    openssl req -x509 -newkey "$3" -nodes -keyout "$1.key" -out "$1.pem" \
+        -subj "$2" -days "$5" -sha256 -extensions v3 -config "$4" \
+        >/dev/null 2>&1
+}
+
+sign() {  # sign NAME CA EXTFILE DAYS [SERIAL]
+    serial=${5:-$(bigserial)}
+    openssl x509 -req -in "$1.csr" -CA "$2.pem" -CAkey "$2.key" \
+        -set_serial "$serial" -days "$4" -sha256 \
+        -extfile "$3" -extensions v3 -out "$1.pem" >/dev/null 2>&1
+}
+
+cat > ca.ext <<'X'
+[ req ]
+distinguished_name = dn
+prompt = no
+[ dn ]
+CN = unused
+[ v3 ]
+basicConstraints = critical,CA:TRUE,pathlen:1
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+X
+
+cat > sub.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+X
+
+cat > leaf.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth,clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:leaf.example.com,DNS:www.example.com
+X
+
+cat > leafec.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:ec.example.com,IP:192.0.2.7
+X
+
+# The ordinary RSA chain: root -> intermediate -> leaf.
+selfsign root-rsa "/C=GB/O=certlint/CN=certlint RSA Root" rsa:2048 ca.ext 3650
+req "/C=GB/O=certlint/CN=certlint RSA Intermediate" rsa:2048 inter-rsa
+sign inter-rsa root-rsa sub.ext 1825
+req "/C=GB/O=certlint/CN=leaf.example.com" rsa:2048 leaf-rsa
+sign leaf-rsa inter-rsa leaf.ext 90
+
+openssl ecparam -name prime256v1 -out p256.pem
+openssl ecparam -name secp384r1 -out p384.pem
+
+# The same shape over P-256 and P-384, so the EC signature paths get a
+# certificate each rather than being reasoned about.
+selfsign root-ec "/C=GB/O=certlint/CN=certlint EC Root" ec:p256.pem ca.ext 3650
+req "/C=GB/O=certlint/CN=certlint EC Intermediate" ec:p384.pem inter-ec
+sign inter-ec root-ec sub.ext 1825
+req "/C=GB/O=certlint/CN=ec.example.com" ec:p256.pem leaf-ec
+sign leaf-ec inter-ec leafec.ext 90
+
+rm -f ca.ext sub.ext leaf.ext leafec.ext p256.pem p384.pem *.csr
+n=$(ls *.pem | wc -l)
+echo "corpus: $n certificates in $OUT"
