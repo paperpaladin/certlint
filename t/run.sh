@@ -100,6 +100,13 @@ openssl x509 -in "$C/leaf-rsa.pem" -outform DER -out "$W/leaf.der"
     && ok "a raw DER input passes through unchanged" \
     || no "a raw DER input did not pass through unchanged"
 
+note "--asn1 against openssl asn1parse, TLV by TLV"
+if python3 "$HERE/asn1cmp.py" "$BIN" "$C"/*.pem; then
+    ok "every TLV agrees with asn1parse on offset, depth, hl, length, tag"
+else
+    no "asn1parse and certlint disagree about the DER structure"
+fi
+
 note "malformed PEM is refused"
 mal_refused=0
 mal_total=0

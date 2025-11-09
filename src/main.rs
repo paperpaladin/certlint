@@ -118,6 +118,36 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
     Ok(v)
 }
 
+// Walk the whole tree, printing one line per TLV, descending into every
+// constructed value. The walk is iterative: the depth of a certificate is
+// attacker-controlled, and a recursive walker is a stack overflow waiting
+// for a file with ten thousand nested SEQUENCEs.
+fn print_asn1(der: &[u8]) -> der::Result<usize> {
+    let mut stack: Vec<(der::Reader, usize)> = vec![(der::Reader::new(der), 0)];
+    let mut count = 0;
+    while let Some((mut r, depth)) = stack.pop() {
+        if r.is_empty() {
+            continue;
+        }
+        let tlv = r.read_tlv()?;
+        count += 1;
+        println!(
+            "{:6} d={} hl={} l={} {} {}",
+            tlv.start,
+            depth,
+            tlv.hlen,
+            tlv.value.len(),
+            if tlv.tag.constructed { "cons" } else { "prim" },
+            tlv.tag.name()
+        );
+        stack.push((r, depth));
+        if tlv.tag.constructed {
+            stack.push((tlv.reader(), depth + 1));
+        }
+    }
+    Ok(count)
+}
+
 fn run(a: &Args) -> Result<u8, String> {
     for f in &a.files {
         let bytes = read_file(f)?;
@@ -133,6 +163,11 @@ fn run(a: &Args) -> Result<u8, String> {
                 let mut out = std::io::stdout();
                 out.write_all(&certs[0]).map_err(|e| e.to_string())?;
                 out.flush().map_err(|e| e.to_string())?;
+            }
+            Some(Mode::Asn1) => {
+                for c in certs.iter() {
+                    print_asn1(c).map_err(|e| format!("{}: {}", f, e))?;
+                }
             }
             _ => {
                 for (i, c) in certs.iter().enumerate() {
