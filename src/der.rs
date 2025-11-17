@@ -352,3 +352,193 @@ impl<'a> Reader<'a> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Primitive values.
+//
+// Each of these takes the TLV rather than the bytes, so the tag is checked in
+// the same place the value is decoded and a caller cannot read an INTEGER out
+// of something that was not one.
+
+impl<'a> Tlv<'a> {
+    fn primitive(&self, number: u32, what: &str) -> Result<&'a [u8]> {
+        self.expect(CLASS_UNIVERSAL, number, what)?;
+        if self.tag.constructed {
+            return err(self.start, format!("{} must be primitive under DER", what));
+        }
+        Ok(self.value)
+    }
+
+    // The content octets of an INTEGER, with DER's minimality rule checked:
+    // the first nine bits may not be all zero or all one, which is to say a
+    // redundant leading 0x00 or 0xff octet is an encoding error rather than
+    // padding to be skipped.
+    pub fn integer(&self) -> Result<&'a [u8]> {
+        let v = self.primitive(T_INTEGER, "INTEGER")?;
+        if v.is_empty() {
+            return err(self.start, "INTEGER has no content octets");
+        }
+        if v.len() > 1 {
+            let (a, b) = (v[0], v[1]);
+            if a == 0x00 && b & 0x80 == 0 {
+                return err(self.start, "INTEGER has a redundant leading 0x00 octet");
+            }
+            if a == 0xff && b & 0x80 != 0 {
+                return err(self.start, "INTEGER has a redundant leading 0xff octet");
+            }
+        }
+        Ok(v)
+    }
+
+    pub fn integer_is_negative(&self) -> Result<bool> {
+        Ok(self.integer()?[0] & 0x80 != 0)
+    }
+
+    // The magnitude, most significant octet first, with no leading zero. This
+    // is what openssl asn1parse prints after the sign, so it is the form the
+    // comparison is made in.
+    pub fn integer_magnitude(&self) -> Result<Vec<u8>> {
+        let v = self.integer()?;
+        let mut m: Vec<u8> = if v[0] & 0x80 == 0 {
+            v.to_vec()
+        } else {
+            // Two's complement negation, most significant octet first.
+            let mut out = vec![0u8; v.len()];
+            let mut carry = 1u16;
+            for i in (0..v.len()).rev() {
+                let t = u16::from(!v[i]) + carry;
+                out[i] = t as u8;
+                carry = t >> 8;
+            }
+            out
+        };
+        while m.len() > 1 && m[0] == 0 {
+            m.remove(0);
+        }
+        Ok(m)
+    }
+
+    // Uppercase hex of the magnitude with a leading minus for a negative
+    // value, which is how BN_bn2hex and therefore asn1parse writes one.
+    pub fn integer_hex(&self) -> Result<String> {
+        let neg = self.integer_is_negative()?;
+        let m = self.integer_magnitude()?;
+        let mut s = String::new();
+        if neg {
+            s.push('-');
+        }
+        for b in &m {
+            s.push_str(&format!("{:02X}", b));
+        }
+        Ok(s)
+    }
+
+    pub fn integer_u64(&self) -> Result<u64> {
+        let v = self.integer()?;
+        if v[0] & 0x80 != 0 {
+            return err(self.start, "INTEGER is negative where a count was wanted");
+        }
+        let d: &[u8] = if v[0] == 0 { &v[1..] } else { v };
+        if d.len() > 8 {
+            return err(self.start, "INTEGER does not fit in 64 bits");
+        }
+        let mut n = 0u64;
+        for b in d {
+            n = (n << 8) | u64::from(*b);
+        }
+        Ok(n)
+    }
+
+    // DER allows exactly two encodings of a BOOLEAN, and FALSE is the only
+    // one of them that is not 0xff. A decoder that accepts 0x01 as TRUE will
+    // disagree with one that does not about whether an extension is critical.
+    pub fn boolean(&self) -> Result<bool> {
+        let v = self.primitive(T_BOOLEAN, "BOOLEAN")?;
+        if v.len() != 1 {
+            return err(self.start, "BOOLEAN must have exactly one content octet");
+        }
+        match v[0] {
+            0x00 => Ok(false),
+            0xff => Ok(true),
+            n => err(
+                self.start,
+                format!("BOOLEAN content octet is 0x{:02x}, not 0x00 or 0xff", n),
+            ),
+        }
+    }
+
+    pub fn null(&self) -> Result<()> {
+        let v = self.primitive(T_NULL, "NULL")?;
+        if !v.is_empty() {
+            return err(self.start, "NULL has content octets");
+        }
+        Ok(())
+    }
+
+    pub fn oid(&self) -> Result<Oid> {
+        let v = self.primitive(T_OID, "OBJECT IDENTIFIER")?;
+        Oid::decode(v, self.start)
+    }
+}
+
+// An object identifier, kept as its content octets. Comparison is on the
+// bytes: two OIDs are equal when their encodings are, and under DER an
+// encoding is unique.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Oid(pub Vec<u8>);
+
+impl Oid {
+    pub fn decode(v: &[u8], at: usize) -> Result<Oid> {
+        if v.is_empty() {
+            return err(at, "OBJECT IDENTIFIER has no content octets");
+        }
+        if v[v.len() - 1] & 0x80 != 0 {
+            return err(at, "OBJECT IDENTIFIER ends mid-subidentifier");
+        }
+        let mut first = true;
+        for (i, b) in v.iter().enumerate() {
+            if first && *b == 0x80 {
+                return err(at, "OBJECT IDENTIFIER subidentifier has a leading 0x80");
+            }
+            first = *b & 0x80 == 0;
+            let _ = i;
+        }
+        Ok(Oid(v.to_vec()))
+    }
+
+    // Dotted decimal. The first octet carries two arcs: 40*x + y, with x
+    // capped at 2 and y unbounded above 2.39 for x == 2.
+    pub fn dotted(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        let mut acc: u128 = 0;
+        let mut started = false;
+        for b in &self.0 {
+            acc = (acc << 7) | u128::from(b & 0x7f);
+            if b & 0x80 != 0 {
+                continue;
+            }
+            if !started {
+                started = true;
+                let (x, y) = if acc < 40 {
+                    (0, acc)
+                } else if acc < 80 {
+                    (1, acc - 40)
+                } else {
+                    (2, acc - 80)
+                };
+                parts.push(x.to_string());
+                parts.push(y.to_string());
+            } else {
+                parts.push(acc.to_string());
+            }
+            acc = 0;
+        }
+        parts.join(".")
+    }
+}
+
+impl fmt::Display for Oid {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.dotted())
+    }
+}

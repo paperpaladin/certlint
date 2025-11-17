@@ -16,6 +16,23 @@ OURS = re.compile(r"^\s*(\d+) d=(\d+) hl=(\d+) l=(\d+) (cons|prim) (.*)$")
 OSSL = re.compile(r"^\s*(\d+):d=(\d+)\s+hl=(\d+) l=\s*(\d+)\s+(cons|prim):\s*(.*?)\s*$")
 
 
+def split_value(field):
+    """Split a trailing printed value off a tag-name field.
+
+    openssl annotates a value it cannot print as text with [HEX DUMP] and
+    writes the value after a colon. We print the hex after a colon with no
+    annotation, and print nothing at all for a type whose value we do not
+    decode yet. None means "no value printed", which is not the same as an
+    empty value.
+    """
+    field = field.strip()
+    field = field.replace("[HEX DUMP]", "")
+    if ":" not in field:
+        return field.strip(), None
+    name, value = field.split(":", 1)
+    return name.strip(), value.strip()
+
+
 def norm_tag(name):
     """One spelling for a tag name, since the two printers differ."""
     m = re.match(r"^(cont|appl|priv)\s*\[\s*(\d+)\s*\]$", name)
@@ -24,11 +41,6 @@ def norm_tag(name):
     m = re.match(r"^\[(cont|appl|priv) (\d+)\]$", name)
     if m:
         return "%s%s" % (m.group(1), m.group(2))
-    # openssl annotates a value it cannot print as text with [HEX DUMP] and
-    # writes the value after a colon. --asn1 prints neither, so both come
-    # off before the names are compared.
-    name = re.sub(r"\s*\[HEX DUMP\].*$", "", name)
-    name = name.split(":")[0].strip()
     return name.strip()
 
 
@@ -38,6 +50,7 @@ def parse(text, rx):
         m = rx.match(line)
         if not m:
             continue
+        name, value = split_value(m.group(6))
         out.append(
             (
                 int(m.group(1)),
@@ -45,7 +58,8 @@ def parse(text, rx):
                 int(m.group(3)),
                 int(m.group(4)),
                 m.group(5),
-                norm_tag(m.group(6)),
+                norm_tag(name),
+                value,
             )
         )
     return out
@@ -55,6 +69,8 @@ def main(argv):
     binary, files = argv[1], argv[2:]
     bad = 0
     tlvs = 0
+    compared = [0]
+    skipped = {}
     for f in files:
         ours = subprocess.run(
             [binary, "--asn1", f], capture_output=True, text=True
@@ -73,11 +89,21 @@ def main(argv):
             bad += 1
             continue
         a = parse(ours.stdout, OURS)
+        a = [list(x) for x in a]
+        a = [tuple(x) for x in a]
         b = parse(theirs.stdout, OSSL)
         if not b:
             print("    %s: openssl printed no TLV lines" % f)
             bad += 1
             continue
+        # Compare the value only where both printers printed one. A type we
+        # do not decode yet is counted, not silently skipped.
+        for i in range(min(len(a), len(b))):
+            if a[i][6] is None and b[i][6] is not None:
+                skipped[a[i][5]] = skipped.get(a[i][5], 0) + 1
+                a[i] = a[i][:6] + (b[i][6],)
+            elif a[i][6] is not None and b[i][6] is not None:
+                compared[0] += 1
         if a != b:
             bad += 1
             print("    %s: %d TLVs ours, %d theirs" % (f, len(a), len(b)))
@@ -91,6 +117,10 @@ def main(argv):
                     break
         tlvs += len(b)
     print("    %d TLVs over %d files, %d files disagreed" % (tlvs, len(files), bad))
+    print("    %d printed values compared; %s"
+          % (compared[0],
+             ", ".join("%d %s not decoded by us" % (n, t)
+                       for t, n in sorted(skipped.items())) or "none skipped"))
     return min(bad, 125)
 
 

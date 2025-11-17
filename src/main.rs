@@ -118,6 +118,34 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
     Ok(v)
 }
 
+// The value an --asn1 line carries, where there is one worth printing. A
+// type whose value is not printed here is a type the comparison against
+// asn1parse cannot check the value of, and the comparator counts those
+// separately so the gap stays visible.
+fn asn1_value(tlv: &der::Tlv) -> String {
+    if tlv.tag.class != der::CLASS_UNIVERSAL || tlv.tag.constructed {
+        return String::new();
+    }
+    match tlv.tag.number {
+        der::T_INTEGER => match tlv.integer_hex() {
+            Ok(h) => format!(" :{}", h),
+            Err(e) => format!(" :<{}>", e.msg),
+        },
+        der::T_BOOLEAN => match tlv.boolean() {
+            Ok(b) => format!(" :{}", if b { 255 } else { 0 }),
+            Err(e) => format!(" :<{}>", e.msg),
+        },
+        der::T_OCTET_STRING => {
+            let mut s = String::from(" :");
+            for b in tlv.value {
+                s.push_str(&format!("{:02X}", b));
+            }
+            s
+        }
+        _ => String::new(),
+    }
+}
+
 // Walk the whole tree, printing one line per TLV, descending into every
 // constructed value. The walk is iterative: the depth of a certificate is
 // attacker-controlled, and a recursive walker is a stack overflow waiting
@@ -132,13 +160,14 @@ fn print_asn1(der: &[u8]) -> der::Result<usize> {
         let tlv = r.read_tlv()?;
         count += 1;
         println!(
-            "{:6} d={} hl={} l={} {} {}",
+            "{:6} d={} hl={} l={} {} {}{}",
             tlv.start,
             depth,
             tlv.hlen,
             tlv.value.len(),
             if tlv.tag.constructed { "cons" } else { "prim" },
-            tlv.tag.name()
+            tlv.tag.name(),
+            asn1_value(&tlv)
         );
         stack.push((r, depth));
         if tlv.tag.constructed {
