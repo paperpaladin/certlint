@@ -5,6 +5,7 @@
 // the point of the exercise is the bytes.
 
 mod der;
+mod oid;
 mod pem;
 
 use std::io::Write;
@@ -97,6 +98,15 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .parse()
                     .map_err(|_| format!("--max-paths wants a number, got {}", v))?;
             }
+            // Undocumented on purpose: it prints the OID table for the
+            // suite to check against openssl and python cryptography, and
+            // it is not a mode anybody would run by hand.
+            "--oid-table" => {
+                for d in oid::all_dotted() {
+                    println!("{}", d);
+                }
+                std::process::exit(0);
+            }
             "-h" | "--help" => return Err(String::new()),
             _ if arg.starts_with('-') && arg.len() > 1 => {
                 return Err(format!("unknown option {}", arg))
@@ -133,6 +143,10 @@ fn asn1_value(tlv: &der::Tlv) -> String {
         },
         der::T_BOOLEAN => match tlv.boolean() {
             Ok(b) => format!(" :{}", if b { 255 } else { 0 }),
+            Err(e) => format!(" :<{}>", e.msg),
+        },
+        der::T_OID => match tlv.oid() {
+            Ok(o) => format!(" :{}", o.dotted()),
             Err(e) => format!(" :<{}>", e.msg),
         },
         der::T_OCTET_STRING => {

@@ -107,6 +107,13 @@ else
     no "asn1parse and certlint disagree about the DER structure"
 fi
 
+note "the OID table"
+if python3 "$HERE/oidtable.py" "$BIN"; then
+    ok "every OID certlint names is one openssl and cryptography accept"
+else
+    no "the OID table holds something that is not an object identifier"
+fi
+
 note "malformed PEM is refused"
 mal_refused=0
 mal_total=0

@@ -44,6 +44,34 @@ def norm_tag(name):
     return name.strip()
 
 
+_oid_cache = {}
+
+
+def openssl_renders_oid_as(dotted):
+    """What openssl prints for this OID, asked of openssl itself.
+
+    --asn1 prints dotted decimal, asn1parse prints openssl's own name for an
+    OID it knows. Rather than copying openssl's name table into certlint,
+    the dotted value we printed is handed back to openssl and the rendering
+    it chooses is what gets compared. A wrong OID therefore fails here even
+    when both printers would agree on the shape of the line.
+    """
+    if dotted in _oid_cache:
+        return _oid_cache[dotted]
+    r = subprocess.run(
+        ["openssl", "asn1parse", "-genstr", "OID:" + dotted],
+        capture_output=True, text=True,
+    )
+    out = dotted
+    if r.returncode == 0 and ":" in r.stdout:
+        out = r.stdout.split(":", 2)[-1].strip()
+        # The line is "0:d=0  hl=2 l=9 prim: OBJECT  :name"; take the text
+        # after the last colon on the first line.
+        out = r.stdout.splitlines()[0].rsplit(":", 1)[-1].strip()
+    _oid_cache[dotted] = out
+    return out
+
+
 def parse(text, rx):
     out = []
     for line in text.splitlines():
@@ -70,6 +98,7 @@ def main(argv):
     bad = 0
     tlvs = 0
     compared = [0]
+    oids = [0]
     skipped = {}
     for f in files:
         ours = subprocess.run(
@@ -103,6 +132,9 @@ def main(argv):
                 skipped[a[i][5]] = skipped.get(a[i][5], 0) + 1
                 a[i] = a[i][:6] + (b[i][6],)
             elif a[i][6] is not None and b[i][6] is not None:
+                if a[i][5] == "OBJECT":
+                    a[i] = a[i][:6] + (openssl_renders_oid_as(a[i][6]),)
+                    oids[0] += 1
                 compared[0] += 1
         if a != b:
             bad += 1
@@ -117,6 +149,8 @@ def main(argv):
                     break
         tlvs += len(b)
     print("    %d TLVs over %d files, %d files disagreed" % (tlvs, len(files), bad))
+    print("    %d of them OBJECT values, each resolved by asking openssl what"
+          " it renders that dotted OID as" % oids[0])
     print("    %d printed values compared; %s"
           % (compared[0],
              ", ".join("%d %s not decoded by us" % (n, t)
