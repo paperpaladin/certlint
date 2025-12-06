@@ -149,6 +149,37 @@ fn asn1_value(tlv: &der::Tlv) -> String {
             Ok(o) => format!(" :{}", o.dotted()),
             Err(e) => format!(" :<{}>", e.msg),
         },
+        // The narrow string types and the two times print as the bytes
+        // they were encoded as, which is what asn1parse prints. BMPString
+        // and UniversalString print nothing, because asn1parse prints
+        // nothing for them and inventing a rendering would be comparing
+        // our transcoding against no one.
+        n if (der::is_string_tag(n) && n != der::T_BMP_STRING && n != der::T_UNIVERSAL_STRING)
+            || n == der::T_UTC_TIME
+            || n == der::T_GENERALIZED_TIME =>
+        {
+            let bytes = if n == der::T_UTC_TIME || n == der::T_GENERALIZED_TIME {
+                Ok(tlv.value)
+            } else {
+                tlv.string_bytes()
+            };
+            match bytes {
+                Ok(b) => {
+                    let mut s = String::from(" :");
+                    for c in b {
+                        s.push(char::from(*c));
+                    }
+                    s
+                }
+                Err(e) => format!(" :<{}>", e.msg),
+            }
+        }
+        // The wide types print nothing when they are well formed, and the
+        // reason when they are not, so a malformed one is still visible.
+        der::T_BMP_STRING | der::T_UNIVERSAL_STRING => match tlv.string_text() {
+            Ok(_) => String::new(),
+            Err(e) => format!(" :<{}>", e.msg),
+        },
         der::T_OCTET_STRING => {
             let mut s = String::from(" :");
             for b in tlv.value {

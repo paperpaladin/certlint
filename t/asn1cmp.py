@@ -44,6 +44,13 @@ def norm_tag(name):
     return name.strip()
 
 
+def run_bytes(cmd):
+    r = subprocess.run(cmd, capture_output=True)
+    r.stdout = r.stdout.decode("utf-8", "surrogateescape")
+    r.stderr = r.stderr.decode("utf-8", "surrogateescape")
+    return r
+
+
 _oid_cache = {}
 
 
@@ -101,12 +108,11 @@ def main(argv):
     oids = [0]
     skipped = {}
     for f in files:
-        ours = subprocess.run(
-            [binary, "--asn1", f], capture_output=True, text=True
-        )
-        theirs = subprocess.run(
-            ["openssl", "asn1parse", "-in", f], capture_output=True, text=True
-        )
+        # Bytes, not text. A T61String or a patched DirectoryString puts
+        # bytes in both printers' output that are not UTF-8, and a decoder
+        # that raises there would turn a fixture into a harness crash.
+        ours = run_bytes([binary, "--asn1", f])
+        theirs = run_bytes(["openssl", "asn1parse", "-in", f])
         if ours.returncode != 0:
             print("    %s: certlint exited %d: %s"
                   % (f, ours.returncode, ours.stderr.strip()))

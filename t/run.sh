@@ -107,6 +107,38 @@ else
     no "asn1parse and certlint disagree about the DER structure"
 fi
 
+note "string character sets: where certlint is stricter than openssl"
+# openssl refuses to ENCODE these and parses them without complaint, so each
+# one is a refusal by us against an acceptance by the oracle. Counted as a
+# refusal, which is a different number from a disagreement.
+strict=0
+both=0
+accepted=0
+strict_total=0
+try_strict() {  # try_strict DESCRIPTION OCTETS
+    strict_total=$((strict_total+1))
+    printf "$2" > "$W/s.der"
+    ossl=accepts
+    openssl asn1parse -inform DER -in "$W/s.der" >/dev/null 2>&1 || ossl=refuses
+    if "$BIN" --asn1 "$W/s.der" 2>&1 | grep -q ':<'; then
+        if [ "$ossl" = refuses ]; then both=$((both+1)); else strict=$((strict+1)); fi
+    else
+        accepted=$((accepted+1))
+        echo "    we accept what openssl $ossl: $1"
+    fi
+}
+# Octal escapes, not hex: this runs under dash, whose printf has no \x.
+try_strict "an asterisk in a PrintableString" '\023\004ab*c'
+try_strict "a letter in a NumericString" '\022\00312x'
+try_strict "a high byte in an IA5String" '\026\003ab\377'
+try_strict "an ill-formed UTF8String" '\014\002\303('
+try_strict "a BMPString with an odd length" '\036\003abc'
+try_strict "a UniversalString whose length is not a multiple of four" '\034\005abcde'
+try_strict "a control character in a VisibleString" '\032\003a\001b'
+[ "$accepted" -eq 0 ] \
+    && ok "$strict_total malformed strings refused: $strict where openssl parses them anyway, $both where openssl refuses too" \
+    || no "$accepted of $strict_total malformed strings were accepted"
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"

@@ -542,3 +542,150 @@ impl fmt::Display for Oid {
         write!(f, "{}", self.dotted())
     }
 }
+
+// ---------------------------------------------------------------------------
+// String types.
+//
+// Each of these has a character set, and the set is the only thing that
+// distinguishes several of them in the encoding. A decoder that treats them
+// all as byte strings will accept a PrintableString holding a comma-quoted
+// DN fragment or a NUL, which is how a name gets through a filter that was
+// looking at the printed form.
+
+pub fn is_string_tag(number: u32) -> bool {
+    matches!(
+        number,
+        T_UTF8_STRING
+            | T_NUMERIC_STRING
+            | T_PRINTABLE_STRING
+            | T_T61_STRING
+            | T_IA5_STRING
+            | T_VISIBLE_STRING
+            | T_UNIVERSAL_STRING
+            | T_BMP_STRING
+    )
+}
+
+// X.680 table 10: the 74 characters of PrintableString, and nothing else.
+pub fn is_printable_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || b" '()+,-./:=?".contains(&c)
+}
+
+impl<'a> Tlv<'a> {
+    // The content octets of a string, with the character set checked. The
+    // bytes come back as they were encoded; turning them into a Rust string
+    // is a separate step because two of the eight types are not byte
+    // oriented at all.
+    pub fn string_bytes(&self) -> Result<&'a [u8]> {
+        if !is_string_tag(self.tag.number) || self.tag.class != CLASS_UNIVERSAL {
+            return err(self.start, format!("{} is not a string type", self.tag.name()));
+        }
+        if self.tag.constructed {
+            return err(
+                self.start,
+                "a constructed string is BER, not DER",
+            );
+        }
+        let v = self.value;
+        match self.tag.number {
+            T_UTF8_STRING => {
+                if std::str::from_utf8(v).is_err() {
+                    return err(self.start, "UTF8String is not valid UTF-8");
+                }
+            }
+            T_PRINTABLE_STRING => {
+                if let Some(p) = v.iter().position(|c| !is_printable_char(*c)) {
+                    return err(
+                        self.start,
+                        format!(
+                            "PrintableString holds 0x{:02x} at offset {}, outside its alphabet",
+                            v[p], p
+                        ),
+                    );
+                }
+            }
+            T_NUMERIC_STRING => {
+                if let Some(p) = v.iter().position(|c| !c.is_ascii_digit() && *c != b' ') {
+                    return err(
+                        self.start,
+                        format!("NumericString holds 0x{:02x} at offset {}", v[p], p),
+                    );
+                }
+            }
+            T_IA5_STRING => {
+                if let Some(p) = v.iter().position(|c| *c > 0x7f) {
+                    return err(
+                        self.start,
+                        format!("IA5String holds 0x{:02x} at offset {}, which is not ASCII", v[p], p),
+                    );
+                }
+            }
+            T_VISIBLE_STRING => {
+                if let Some(p) = v.iter().position(|c| !(0x20..=0x7e).contains(c)) {
+                    return err(
+                        self.start,
+                        format!("VisibleString holds 0x{:02x} at offset {}", v[p], p),
+                    );
+                }
+            }
+            T_BMP_STRING => {
+                if v.len() % 2 != 0 {
+                    return err(self.start, "BMPString has an odd number of octets");
+                }
+            }
+            T_UNIVERSAL_STRING => {
+                if v.len() % 4 != 0 {
+                    return err(self.start, "UniversalString length is not a multiple of 4");
+                }
+            }
+            // T61String has no character set worth enforcing: the registered
+            // one is a 1988 videotex encoding that no issuer has ever meant,
+            // and in practice the bytes are Latin-1 or UTF-8 or neither. It
+            // is accepted as bytes and flagged by the linter instead.
+            _ => {}
+        }
+        Ok(v)
+    }
+
+    // The string as text. The two wide types are decoded here; everything
+    // else is passed through, with T61String read as Latin-1 because that is
+    // what the bytes usually are and there is no right answer.
+    pub fn string_text(&self) -> Result<String> {
+        let v = self.string_bytes()?;
+        match self.tag.number {
+            T_UTF8_STRING => Ok(String::from_utf8_lossy(v).into_owned()),
+            T_BMP_STRING => {
+                let units: Vec<u16> = v
+                    .chunks(2)
+                    .map(|c| (u16::from(c[0]) << 8) | u16::from(c[1]))
+                    .collect();
+                String::from_utf16(&units)
+                    .map_err(|_| Error {
+                        at: self.start,
+                        msg: "BMPString holds an unpaired surrogate".to_string(),
+                    })
+            }
+            T_UNIVERSAL_STRING => {
+                let mut s = String::new();
+                for c in v.chunks(4) {
+                    let n = (u32::from(c[0]) << 24)
+                        | (u32::from(c[1]) << 16)
+                        | (u32::from(c[2]) << 8)
+                        | u32::from(c[3]);
+                    match char::from_u32(n) {
+                        Some(ch) => s.push(ch),
+                        None => {
+                            return err(
+                                self.start,
+                                format!("UniversalString holds U+{:X}, not a character", n),
+                            )
+                        }
+                    }
+                }
+                Ok(s)
+            }
+            T_T61_STRING => Ok(v.iter().map(|b| char::from(*b)).collect()),
+            _ => Ok(v.iter().map(|b| char::from(*b)).collect()),
+        }
+    }
+}
