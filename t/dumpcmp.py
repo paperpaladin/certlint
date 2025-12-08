@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Compare certlint --dump against three parsers, field by field.
+
+Not file by file: each fact certlint prints is turned into a canonical
+python value, each oracle is asked for the same fact in its own way, and
+the pairs are compared one at a time. A field the oracle does not report is
+counted as not compared rather than passed over in silence, and the counts
+are printed so that a comparison which has quietly stopped checking
+anything looks different from one that agrees.
+
+Oracles:
+  cryptography  structured values, so no text parsing at all
+  openssl       x509 -text -noout and the single-fact options
+  certtool      --certificate-info, GnuTLS, an independent ASN.1 library
+
+Where two oracles disagree with each other the disagreement is reported
+with both values and counted on its own line; it is not a certlint
+failure, and averaging it away would lose the only interesting thing in
+the output.
+"""
+import datetime
+import re
+import subprocess
+import sys
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+
+# GnuTLS spells a signature algorithm its own way. This is the harness
+# translating the oracle's names, not certlint's table: certlint prints the
+# OID and the OID is what gets translated.
+GNUTLS_SIG = {
+    "1.2.840.113549.1.1.5": "RSA-SHA1",
+    "1.2.840.113549.1.1.11": "RSA-SHA256",
+    "1.2.840.113549.1.1.12": "RSA-SHA384",
+    "1.2.840.113549.1.1.13": "RSA-SHA512",
+    "1.2.840.10045.4.1": "ECDSA-SHA1",
+    "1.2.840.10045.4.3.2": "ECDSA-SHA256",
+    "1.2.840.10045.4.3.3": "ECDSA-SHA384",
+    "1.2.840.10045.4.3.4": "ECDSA-SHA512",
+}
+
+_oid_name_cache = {}
+
+
+def openssl_name_for(dotted):
+    """Ask openssl what it calls this OID, so certlint need not know."""
+    if dotted not in _oid_name_cache:
+        r = subprocess.run(
+            ["openssl", "asn1parse", "-genstr", "OID:" + dotted],
+            capture_output=True, text=True,
+        )
+        name = dotted
+        if r.returncode == 0 and r.stdout:
+            name = r.stdout.splitlines()[0].rsplit(":", 1)[-1].strip()
+        _oid_name_cache[dotted] = name
+    return _oid_name_cache[dotted]
+
+
+def run(cmd):
+    r = subprocess.run(cmd, capture_output=True)
+    return r.returncode, r.stdout.decode("utf-8", "surrogateescape"), \
+        r.stderr.decode("utf-8", "surrogateescape")
+
+
+def ours(binary, path):
+    rc, out, errtext = run([binary, "--dump", path])
+    if rc != 0:
+        return None, "certlint exited %d: %s" % (rc, errtext.strip())
+    d = {}
+    for line in out.splitlines():
+        if " = " not in line:
+            continue
+        k, v = line.split(" = ", 1)
+        d.setdefault(k, []).append(v)
+    return d, None
+
+
+def as_int_serial(text):
+    neg = text.startswith("-")
+    n = int(text.lstrip("-") or "0", 16)
+    return -n if neg else n
+
+
+def canonical_ours(d):
+    """The facts, as canonical python values."""
+    out = {}
+    one = lambda k: d[k][0] if k in d else None
+    if one("version"):
+        out["version"] = int(one("version"))
+    if one("serial") is not None:
+        out["serial"] = as_int_serial(one("serial"))
+    for k in ("not_before_epoch", "not_after_epoch", "tbs_octets",
+              "signature_octets"):
+        if one(k) is not None:
+            out[k] = int(one(k))
+    if one("signature_algorithm_oid"):
+        out["sig_alg_oid"] = one("signature_algorithm_oid")
+    if one("issuer_rfc4514") is not None:
+        out["issuer_rfc4514"] = one("issuer_rfc4514")
+    if one("subject_rfc4514") is not None:
+        out["subject_rfc4514"] = one("subject_rfc4514")
+    for key, dest in (("issuer_attr", "issuer_attrs"),
+                      ("subject_attr", "subject_attrs")):
+        if key in d:
+            out[dest] = tuple(d[key])
+    if one("spki_algorithm_oid"):
+        out["spki_alg_oid"] = one("spki_algorithm_oid")
+    if one("key_bits"):
+        out["key_bits"] = int(one("key_bits"))
+    if one("spki_octets"):
+        out["spki_octets"] = int(one("spki_octets"))
+    if one("ec_curve_oid"):
+        out["ec_curve_oid"] = one("ec_curve_oid")
+    if "extension" in d:
+        out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
+        out["ext_critical"] = tuple(
+            "%s %s" % (e.split()[0], e.split()[1]) for e in d["extension"])
+    return out
+
+
+def from_cryptography(path):
+    data = open(path, "rb").read()
+    c = x509.load_pem_x509_certificate(data) if b"-----BEGIN" in data \
+        else x509.load_der_x509_certificate(data)
+    out = {
+        "version": c.version.value + 1,
+        "serial": c.serial_number,
+        "not_before_epoch": int(c.not_valid_before_utc.timestamp()),
+        "not_after_epoch": int(c.not_valid_after_utc.timestamp()),
+        "tbs_octets": len(c.tbs_certificate_bytes),
+        "signature_octets": len(c.signature),
+        "sig_alg_oid": c.signature_algorithm_oid.dotted_string,
+        "issuer_attrs": tuple(
+            "%s %s" % (a.oid.dotted_string, a.value)
+            for rdn in c.issuer.rdns for a in rdn),
+        "subject_attrs": tuple(
+            "%s %s" % (a.oid.dotted_string, a.value)
+            for rdn in c.subject.rdns for a in rdn),
+        "ext_oids": tuple(e.oid.dotted_string for e in c.extensions),
+        "ext_critical": tuple(
+            "%s %s" % (e.oid.dotted_string, "critical" if e.critical
+                       else "noncritical") for e in c.extensions),
+    }
+    spki = c.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo)
+    out["spki_octets"] = len(spki)
+    out["key_bits"] = c.public_key().key_size
+    return out
+
+
+def openssl_date(text):
+    # "Oct 20 06:39:24 2026 GMT", and openssl prints GMT for everything.
+    text = text.strip()
+    if not text.endswith("GMT"):
+        raise ValueError(text)
+    t = datetime.datetime.strptime(text[:-4].strip(), "%b %d %H:%M:%S %Y")
+    return int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
+
+
+def from_openssl(path):
+    out = {}
+    rc, text, _ = run(["openssl", "x509", "-in", path, "-noout", "-text"])
+    if rc != 0:
+        return out
+    m = re.search(r"Version: (\d+) \(0x", text)
+    if m:
+        out["version"] = int(m.group(1))
+    m = re.search(r"^\s*Signature Algorithm: (\S+)", text, re.M)
+    if m:
+        out["sig_alg_openssl_name"] = m.group(1)
+    rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-serial"])
+    if rc == 0 and "=" in s:
+        out["serial"] = as_int_serial(s.split("=", 1)[1].strip())
+    for opt, key in (("-startdate", "not_before_epoch"),
+                     ("-enddate", "not_after_epoch")):
+        rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", opt])
+        if rc == 0 and "=" in s:
+            out[key] = openssl_date(s.split("=", 1)[1])
+    rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-subject",
+                    "-nameopt", "oid,sep_multiline,show_type,utf8"])
+    if rc == 0:
+        out["subject_attrs"] = tuple(openssl_name_lines(s))
+    rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-issuer",
+                    "-nameopt", "oid,sep_multiline,show_type,utf8"])
+    if rc == 0:
+        out["issuer_attrs"] = tuple(openssl_name_lines(s))
+    rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-ext",
+                    "subjectAltName"])
+    return out
+
+
+def openssl_name_lines(text):
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(r"^([0-9.]+)=([A-Z0-9]+):(.*)$", line)
+        if m:
+            out.append("%s %s" % (m.group(1), m.group(3)))
+    return out
+
+
+def gnutls_date(text):
+    # "Tue Oct 20 06:39:24 UTC 2026"
+    t = datetime.datetime.strptime(text.strip(), "%a %b %d %H:%M:%S UTC %Y")
+    return int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
+
+
+def from_certtool(path):
+    out = {}
+    rc, text, _ = run(["certtool", "--certificate-info", "--infile", path])
+    if rc != 0:
+        return out
+    m = re.search(r"^\s*Version: (\d+)", text, re.M)
+    if m:
+        out["version"] = int(m.group(1))
+    m = re.search(r"Serial Number \(hex\): ([0-9a-fA-F]+)", text)
+    if m:
+        # GnuTLS prints the content octets, so this is a signed big-endian
+        # integer and not a magnitude.
+        out["serial"] = int.from_bytes(bytes.fromhex(m.group(1)), "big",
+                                       signed=True)
+    m = re.search(r"Not Before: (.*)", text)
+    if m:
+        out["not_before_epoch"] = gnutls_date(m.group(1))
+    m = re.search(r"Not After: (.*)", text)
+    if m:
+        out["not_after_epoch"] = gnutls_date(m.group(1))
+    m = re.search(r"^\s*Signature Algorithm: (\S+)", text, re.M)
+    if m:
+        out["sig_alg_gnutls_name"] = m.group(1)
+    return out
+
+
+def derived(mine):
+    """Facts certlint states in its own terms, in each oracle's terms."""
+    out = dict(mine)
+    if "sig_alg_oid" in mine:
+        out["sig_alg_openssl_name"] = openssl_name_for(mine["sig_alg_oid"])
+        if mine["sig_alg_oid"] in GNUTLS_SIG:
+            out["sig_alg_gnutls_name"] = GNUTLS_SIG[mine["sig_alg_oid"]]
+    return out
+
+
+def main(argv):
+    binary, files = argv[1], argv[2:]
+    totals = {"cryptography": [0, 0], "openssl": [0, 0], "certtool": [0, 0]}
+    refusals = 0
+    oracle_conflicts = 0
+    skipped = {}
+    for path in files:
+        mine, why = ours(binary, path)
+        if mine is None:
+            print("    REFUSED %s: %s" % (path, why))
+            refusals += 1
+            continue
+        mine = derived(canonical_ours(mine))
+        oracles = {
+            "cryptography": from_cryptography(path),
+            "openssl": from_openssl(path),
+            "certtool": from_certtool(path),
+        }
+        for name, facts in oracles.items():
+            for k, v in sorted(facts.items()):
+                if k not in mine:
+                    skipped[k] = skipped.get(k, 0) + 1
+                    continue
+                totals[name][0] += 1
+                if mine[k] != v:
+                    totals[name][1] += 1
+                    print("    %s %s: ours %r, %s %r"
+                          % (path, k, mine[k], name, v))
+        # Where the oracles disagree with each other, say so.
+        keys = set()
+        for facts in oracles.values():
+            keys |= set(facts)
+        for k in sorted(keys):
+            vals = {n: f[k] for n, f in oracles.items() if k in f}
+            if len(set(map(repr, vals.values()))) > 1:
+                oracle_conflicts += 1
+                print("    ORACLES DISAGREE %s %s: %s"
+                      % (path, k, ", ".join("%s=%r" % (n, v)
+                                            for n, v in sorted(vals.items()))))
+    bad = 0
+    for name in sorted(totals):
+        n, b = totals[name]
+        bad += b
+        print("    %-13s %4d field comparisons, %d disagreed" % (name, n, b))
+    if skipped:
+        print("    not compared (no certlint field): %s"
+              % ", ".join("%s %d" % (k, n) for k, n in sorted(skipped.items())))
+    print("    %d certificates, %d refused by certlint, %d oracle-versus-oracle"
+          " disagreements" % (len(files), refusals, oracle_conflicts))
+    return min(bad + refusals, 125)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

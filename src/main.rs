@@ -4,9 +4,12 @@
 // the bignum, the path builder and the linter are all in this tree, because
 // the point of the exercise is the bytes.
 
+mod cert;
 mod der;
+mod dump;
 mod oid;
 mod pem;
+mod time;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -242,6 +245,10 @@ fn run(a: &Args) -> Result<u8, String> {
                 for c in certs.iter() {
                     print_asn1(c).map_err(|e| format!("{}: {}", f, e))?;
                 }
+            }
+            Some(Mode::Dump) => {
+                let parsed = cert::Cert::parse(&certs[0]).map_err(|e| format!("{}: {}", f, e))?;
+                dump::dump(&parsed).print();
             }
             _ => {
                 for (i, c) in certs.iter().enumerate() {

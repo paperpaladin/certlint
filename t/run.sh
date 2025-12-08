@@ -107,6 +107,13 @@ else
     no "asn1parse and certlint disagree about the DER structure"
 fi
 
+note "--dump against cryptography, openssl and certtool, field by field"
+if python3 "$HERE/dumpcmp.py" "$BIN" "$C"/*.pem; then
+    ok "every field certlint prints agrees with all three parsers"
+else
+    no "a field disagrees with one of the three parsers"
+fi
+
 note "string character sets: where certlint is stricter than openssl"
 # openssl refuses to ENCODE these and parses them without complaint, so each
 # one is a refusal by us against an acceptance by the oracle. Counted as a
