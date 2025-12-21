@@ -92,9 +92,12 @@ pub const AT_DOMAIN_COMPONENT: &str = "0.9.2342.19200300.100.1.25";
 pub const AT_ORGANISATION_ID: &str = "2.5.4.97";
 pub const AT_BUSINESS_CATEGORY: &str = "2.5.4.15";
 
-// (dotted, name, short name for a distinguished name). The short name is
-// empty for everything that is not a DN attribute; RFC 4514 names four of
-// them and everybody prints more.
+// (dotted, name, RFC 4514 short name). RFC 4514 section 3 names exactly
+// nine attribute types and says everything else is written as a dotted OID.
+// openssl prints names for a good many more, so a DN holding one of those
+// is a DN whose string form the three printers cannot be compared on; the
+// harness checks the structure instead and says how many strings it
+// skipped.
 const TABLE: &[(&str, &str, &str)] = &[
     (RSA_ENCRYPTION, "rsaEncryption", ""),
     (RSASSA_PSS, "rsassaPss", ""),
@@ -159,25 +162,25 @@ const TABLE: &[(&str, &str, &str)] = &[
     (POLICY_IV, "individual-validated", ""),
     (POLICY_EV, "extended-validation", ""),
     (AT_COMMON_NAME, "commonName", "CN"),
-    (AT_SERIAL_NUMBER, "serialNumber", "SERIALNUMBER"),
+    (AT_SERIAL_NUMBER, "serialNumber", ""),
     (AT_COUNTRY, "countryName", "C"),
     (AT_LOCALITY, "localityName", "L"),
     (AT_STATE, "stateOrProvinceName", "ST"),
     (AT_ORGANISATION, "organizationName", "O"),
     (AT_ORG_UNIT, "organizationalUnitName", "OU"),
-    ("2.5.4.4", "surname", "SN"),
-    ("2.5.4.12", "title", "title"),
-    ("2.5.4.42", "givenName", "GN"),
-    ("2.5.4.9", "streetAddress", "street"),
-    ("2.5.4.17", "postalCode", "postalCode"),
-    (AT_BUSINESS_CATEGORY, "businessCategory", "businessCategory"),
-    (AT_ORGANISATION_ID, "organizationIdentifier", "organizationIdentifier"),
-    (AT_EMAIL, "emailAddress", "emailAddress"),
+    ("2.5.4.4", "surname", ""),
+    ("2.5.4.12", "title", ""),
+    ("2.5.4.42", "givenName", ""),
+    ("2.5.4.9", "streetAddress", "STREET"),
+    ("2.5.4.17", "postalCode", ""),
+    (AT_BUSINESS_CATEGORY, "businessCategory", ""),
+    (AT_ORGANISATION_ID, "organizationIdentifier", ""),
+    (AT_EMAIL, "emailAddress", ""),
     (AT_DOMAIN_COMPONENT, "domainComponent", "DC"),
     ("0.9.2342.19200300.100.1.1", "userId", "UID"),
-    ("1.3.6.1.4.1.311.60.2.1.1", "jurisdictionLocalityName", "jurisdictionL"),
-    ("1.3.6.1.4.1.311.60.2.1.2", "jurisdictionStateOrProvinceName", "jurisdictionST"),
-    ("1.3.6.1.4.1.311.60.2.1.3", "jurisdictionCountryName", "jurisdictionC"),
+    ("1.3.6.1.4.1.311.60.2.1.1", "jurisdictionLocalityName", ""),
+    ("1.3.6.1.4.1.311.60.2.1.2", "jurisdictionStateOrProvinceName", ""),
+    ("1.3.6.1.4.1.311.60.2.1.3", "jurisdictionCountryName", ""),
 ];
 
 // The name, or None. A caller that prints must fall back to dotted decimal:

@@ -8,6 +8,7 @@
 // repeats.
 
 use crate::cert::Cert;
+use crate::name::Name;
 use crate::oid;
 
 pub struct Dump {
@@ -80,6 +81,39 @@ pub fn dump(c: &Cert) -> Dump {
     );
     let span = c.not_after.epoch - c.not_before.epoch;
     d.put("validity_seconds", span.to_string());
+
+    for (which, der) in [("issuer", c.issuer_der), ("subject", c.subject_der)] {
+        match Name::parse(der) {
+            Ok(n) => {
+                d.put(&format!("{}_rfc4514", which), n.rfc4514());
+                d.put(&format!("{}_rdns", which), n.rdns.len().to_string());
+                d.put(
+                    &format!("{}_attributes", which),
+                    n.attribute_count().to_string(),
+                );
+                if !n.set_ordered {
+                    d.put(&format!("{}_set_unordered", which), "yes");
+                }
+                for rdn in &n.rdns {
+                    for a in rdn {
+                        let v = match &a.text {
+                            Some(t) => t.clone(),
+                            None => crate::name::hexstring(&a.value),
+                        };
+                        d.put(
+                            &format!("{}_attr", which),
+                            format!("{} {}", a.oid.dotted(), v),
+                        );
+                        d.put(
+                            &format!("{}_attr_type", which),
+                            format!("{} {}", a.oid.dotted(), a.value.tag.name()),
+                        );
+                    }
+                }
+            }
+            Err(e) => d.put(&format!("{}_error", which), e.to_string()),
+        }
+    }
 
     d.put("has_extensions", yesno(c.extensions_tlv.is_some()));
     d.put("issuer_unique_id", yesno(c.issuer_unique_id.is_some()));

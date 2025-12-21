@@ -101,9 +101,11 @@ def canonical_ours(d):
     if one("subject_rfc4514") is not None:
         out["subject_rfc4514"] = one("subject_rfc4514")
     for key, dest in (("issuer_attr", "issuer_attrs"),
-                      ("subject_attr", "subject_attrs")):
+                      ("subject_attr", "subject_attrs"),
+                      ("issuer_attr_type", "issuer_attr_types"),
+                      ("subject_attr_type", "subject_attr_types")):
         if key in d:
-            out[dest] = tuple(d[key])
+            out[dest] = tuple(x.upper() if "type" in key else x for x in d[key])
     if one("spki_algorithm_oid"):
         out["spki_alg_oid"] = one("spki_algorithm_oid")
     if one("key_bits"):
@@ -136,6 +138,12 @@ def from_cryptography(path):
             for rdn in c.issuer.rdns for a in rdn),
         "subject_attrs": tuple(
             "%s %s" % (a.oid.dotted_string, a.value)
+            for rdn in c.subject.rdns for a in rdn),
+        "issuer_attr_types": tuple(
+            ("%s %s" % (a.oid.dotted_string, a._type.name)).upper()
+            for rdn in c.issuer.rdns for a in rdn),
+        "subject_attr_types": tuple(
+            ("%s %s" % (a.oid.dotted_string, a._type.name)).upper()
             for rdn in c.subject.rdns for a in rdn),
         "ext_oids": tuple(e.oid.dotted_string for e in c.extensions),
         "ext_critical": tuple(
@@ -186,19 +194,40 @@ def from_openssl(path):
                     "-nameopt", "oid,sep_multiline,show_type,utf8"])
     if rc == 0:
         out["issuer_attrs"] = tuple(openssl_name_lines(s))
-    rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-ext",
-                    "subjectAltName"])
+    for opt, key in (("-subject", "subject"), ("-issuer", "issuer")):
+        rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", opt,
+                        "-nameopt", "oid,sep_multiline,show_type,utf8"])
+        if rc == 0:
+            out[key + "_attr_types"] = tuple(openssl_name_lines(s, True))
+        rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", opt,
+                        "-nameopt", "RFC2253"])
+        if rc == 0 and "=" in s:
+            out[key + "_rfc4514"] = s.split("=", 1)[1].strip()
     return out
 
 
-def openssl_name_lines(text):
+def openssl_name_lines(text, want_type=False):
     out = []
     for line in text.splitlines():
         line = line.strip()
         m = re.match(r"^([0-9.]+)=([A-Z0-9]+):(.*)$", line)
         if m:
-            out.append("%s %s" % (m.group(1), m.group(3)))
+            if want_type:
+                out.append(("%s %s" % (m.group(1), m.group(2))).upper())
+            else:
+                out.append("%s %s" % (m.group(1), m.group(3)))
     return out
+
+
+# The nine attribute types RFC 4514 section 3 gives a short name. A DN made
+# only of these has one string form that all four implementations write the
+# same way; a DN holding anything else does not, because openssl and GnuTLS
+# print names RFC 4514 never defined. Those are compared structurally only,
+# and the count of skipped strings is printed.
+RFC4514_NAMED = {
+    "2.5.4.3", "2.5.4.6", "2.5.4.7", "2.5.4.8", "2.5.4.10", "2.5.4.11",
+    "2.5.4.9", "0.9.2342.19200300.100.1.25", "0.9.2342.19200300.100.1.1",
+}
 
 
 def gnutls_date(text):
@@ -230,6 +259,12 @@ def from_certtool(path):
     m = re.search(r"^\s*Signature Algorithm: (\S+)", text, re.M)
     if m:
         out["sig_alg_gnutls_name"] = m.group(1)
+    m = re.search(r"^\tIssuer: (.*)$", text, re.M)
+    if m:
+        out["issuer_rfc4514"] = m.group(1).strip()
+    m = re.search(r"^\tSubject: (.*)$", text, re.M)
+    if m:
+        out["subject_rfc4514"] = m.group(1).strip()
     return out
 
 
@@ -247,6 +282,7 @@ def main(argv):
     binary, files = argv[1], argv[2:]
     totals = {"cryptography": [0, 0], "openssl": [0, 0], "certtool": [0, 0]}
     refusals = 0
+    dn_skipped = [0]
     oracle_conflicts = 0
     skipped = {}
     for path in files:
@@ -261,6 +297,17 @@ def main(argv):
             "openssl": from_openssl(path),
             "certtool": from_certtool(path),
         }
+        # The DN string is only comparable when every attribute type in it
+        # is one RFC 4514 names. Drop it from every side otherwise, and
+        # count what was dropped.
+        for which in ("issuer", "subject"):
+            key = which + "_rfc4514"
+            types = {a.split()[0] for a in mine.get(which + "_attrs", ())}
+            if not types <= RFC4514_NAMED:
+                dn_skipped[0] += 1
+                mine.pop(key, None)
+                for f in oracles.values():
+                    f.pop(key, None)
         for name, facts in oracles.items():
             for k, v in sorted(facts.items()):
                 if k not in mine:
@@ -290,6 +337,9 @@ def main(argv):
     if skipped:
         print("    not compared (no certlint field): %s"
               % ", ".join("%s %d" % (k, n) for k, n in sorted(skipped.items())))
+    if dn_skipped[0]:
+        print("    %d DN strings not compared: they hold an attribute type"
+              " RFC 4514 does not name" % dn_skipped[0])
     print("    %d certificates, %d refused by certlint, %d oracle-versus-oracle"
           " disagreements" % (len(files), refusals, oracle_conflicts))
     return min(bad + refusals, 125)
