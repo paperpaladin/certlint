@@ -29,6 +29,15 @@ from cryptography.hazmat.primitives import serialization
 # GnuTLS spells a signature algorithm its own way. This is the harness
 # translating the oracle's names, not certlint's table: certlint prints the
 # OID and the OID is what gets translated.
+# GnuTLS and cryptography both name a curve rather than printing its OID,
+# so the harness holds the mapping. certlint prints the OID.
+CURVE_OID = {
+    "secp256r1": "1.2.840.10045.3.1.7",
+    "secp384r1": "1.3.132.0.34",
+    "secp521r1": "1.3.132.0.35",
+    "secp256k1": "1.3.132.0.10",
+}
+
 GNUTLS_SIG = {
     "1.2.840.113549.1.1.5": "RSA-SHA1",
     "1.2.840.113549.1.1.11": "RSA-SHA256",
@@ -114,6 +123,10 @@ def canonical_ours(d):
         out["spki_octets"] = int(one("spki_octets"))
     if one("ec_curve_oid"):
         out["ec_curve_oid"] = one("ec_curve_oid")
+    if one("rsa_exponent"):
+        out["rsa_exponent"] = int(one("rsa_exponent"))
+    if one("rsa_modulus_octets"):
+        out["rsa_modulus_octets"] = int(one("rsa_modulus_octets"))
     if "extension" in d:
         out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
         out["ext_critical"] = tuple(
@@ -154,7 +167,17 @@ def from_cryptography(path):
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo)
     out["spki_octets"] = len(spki)
-    out["key_bits"] = c.public_key().key_size
+    k = c.public_key()
+    out["key_bits"] = k.key_size
+    if hasattr(k, "public_numbers") and hasattr(k.public_numbers(), "e"):
+        n = k.public_numbers()
+        out["rsa_exponent"] = n.e
+        out["rsa_modulus_octets"] = (n.n.bit_length() + 7) // 8
+        out["spki_alg_oid"] = "1.2.840.113549.1.1.1"
+    if hasattr(k, "curve"):
+        out["spki_alg_oid"] = "1.2.840.10045.2.1"
+        if k.curve.name in CURVE_OID:
+            out["ec_curve_oid"] = CURVE_OID[k.curve.name]
     return out
 
 
@@ -178,6 +201,9 @@ def from_openssl(path):
     m = re.search(r"^\s*Signature Algorithm: (\S+)", text, re.M)
     if m:
         out["sig_alg_openssl_name"] = m.group(1)
+    m = re.search(r"Public-Key: \((\d+) bit\)", text)
+    if m:
+        out["key_bits"] = int(m.group(1))
     rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-serial"])
     if rc == 0 and "=" in s:
         out["serial"] = as_int_serial(s.split("=", 1)[1].strip())
@@ -250,6 +276,12 @@ def from_certtool(path):
         # integer and not a magnitude.
         out["serial"] = int.from_bytes(bytes.fromhex(m.group(1)), "big",
                                        signed=True)
+    m = re.search(r"Algorithm Security Level: \S+ \((\d+) bits\)", text)
+    if m:
+        out["key_bits"] = int(m.group(1))
+    m = re.search(r"^\s*Curve:\s+(\S+)", text, re.M)
+    if m and m.group(1).lower() in CURVE_OID:
+        out["ec_curve_oid"] = CURVE_OID[m.group(1).lower()]
     m = re.search(r"Not Before: (.*)", text)
     if m:
         out["not_before_epoch"] = gnutls_date(m.group(1))

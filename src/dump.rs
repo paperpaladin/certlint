@@ -8,6 +8,7 @@
 // repeats.
 
 use crate::cert::Cert;
+use crate::key::{Key, Spki};
 use crate::name::Name;
 use crate::oid;
 
@@ -113,6 +114,36 @@ pub fn dump(c: &Cert) -> Dump {
             }
             Err(e) => d.put(&format!("{}_error", which), e.to_string()),
         }
+    }
+
+    d.put("spki_octets", c.spki_der.len().to_string());
+    match Spki::parse(c.spki_der) {
+        Ok(s) => {
+            d.put("spki_algorithm", s.algorithm_name());
+            d.put("spki_algorithm_oid", s.alg.oid.dotted());
+            if let Some(b) = s.key_bits() {
+                d.put("key_bits", b.to_string());
+            }
+            match &s.key {
+                Key::Rsa { modulus, exponent } => {
+                    d.put("rsa_modulus_octets", modulus.len().to_string());
+                    let mut e: u64 = 0;
+                    for b in exponent.iter().take(8) {
+                        e = (e << 8) | u64::from(*b);
+                    }
+                    d.put("rsa_exponent", e.to_string());
+                }
+                Key::Ec { curve, point } => {
+                    d.put("ec_curve", oid::name_or_dotted(curve));
+                    d.put("ec_curve_oid", curve.dotted());
+                    d.put("ec_point_octets", point.len().to_string());
+                }
+                Key::Opaque { bits } => {
+                    d.put("key_undecoded_octets", bits.len().to_string());
+                }
+            }
+        }
+        Err(e) => d.put("spki_error", e.to_string()),
     }
 
     d.put("has_extensions", yesno(c.extensions_tlv.is_some()));

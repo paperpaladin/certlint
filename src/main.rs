@@ -7,6 +7,7 @@
 mod cert;
 mod der;
 mod dump;
+mod key;
 mod name;
 mod oid;
 mod pem;
