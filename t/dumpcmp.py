@@ -38,6 +38,27 @@ CURVE_OID = {
     "secp256k1": "1.3.132.0.10",
 }
 
+# GnuTLS prints an extension by a name of its own and never by OID, so the
+# harness holds this table. Where certtool prints a name that is not here,
+# the extension comparison for that certificate is dropped and counted
+# rather than guessed at.
+GNUTLS_EXT = {
+    "Basic Constraints": "2.5.29.19",
+    "Key Usage": "2.5.29.15",
+    "Key Purpose": "2.5.29.37",
+    "Subject Key Identifier": "2.5.29.14",
+    "Authority Key Identifier": "2.5.29.35",
+    "Subject Alternative Name": "2.5.29.17",
+    "Issuer Alternative Name": "2.5.29.18",
+    "Name Constraints": "2.5.29.30",
+    "CRL Distribution points": "2.5.29.31",
+    "Certificate Policies": "2.5.29.32",
+    "Authority Information Access": "1.3.6.1.5.5.7.1.1",
+    "Private Key Usage Period": "2.5.29.16",
+    "Policy Constraints": "2.5.29.36",
+    "Inhibit anyPolicy": "2.5.29.54",
+}
+
 GNUTLS_SIG = {
     "1.2.840.113549.1.1.5": "RSA-SHA1",
     "1.2.840.113549.1.1.11": "RSA-SHA256",
@@ -204,6 +225,24 @@ def from_openssl(path):
     m = re.search(r"Public-Key: \((\d+) bit\)", text)
     if m:
         out["key_bits"] = int(m.group(1))
+    exts = []
+    inblock = False
+    for line in text.splitlines():
+        if re.match(r"^ {8}X509v3 extensions:", line):
+            inblock = True
+            continue
+        if inblock:
+            if re.match(r"^ {4}Signature (Algorithm|Value)", line) or \
+               re.match(r"^ {0,8}\S", line):
+                break
+            # openssl writes a trailing space where the extension is not
+            # critical, so the pattern cannot anchor hard on the colon.
+            m = re.match(r"^ {12}(\S.*?): ?(critical)?\s*$", line)
+            if m:
+                exts.append("%s %s" % (m.group(1),
+                                       "critical" if m.group(2) else "noncritical"))
+    if exts:
+        out["ext_openssl_names"] = tuple(exts)
     rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", "-serial"])
     if rc == 0 and "=" in s:
         out["serial"] = as_int_serial(s.split("=", 1)[1].strip())
@@ -291,6 +330,19 @@ def from_certtool(path):
     m = re.search(r"^\s*Signature Algorithm: (\S+)", text, re.M)
     if m:
         out["sig_alg_gnutls_name"] = m.group(1)
+    names = []
+    unknown = False
+    for line in text.splitlines():
+        m = re.match(r"^\t\t(\S.*?) \((critical|not critical)\):$", line)
+        if m:
+            if m.group(1) not in GNUTLS_EXT:
+                unknown = True
+            else:
+                names.append("%s %s" % (
+                    GNUTLS_EXT[m.group(1)],
+                    "critical" if m.group(2) == "critical" else "noncritical"))
+    if names and not unknown:
+        out["ext_critical"] = tuple(names)
     m = re.search(r"^\tIssuer: (.*)$", text, re.M)
     if m:
         out["issuer_rfc4514"] = m.group(1).strip()
@@ -303,6 +355,10 @@ def from_certtool(path):
 def derived(mine):
     """Facts certlint states in its own terms, in each oracle's terms."""
     out = dict(mine)
+    if "ext_oids" in mine:
+        out["ext_openssl_names"] = tuple(
+            "%s %s" % (openssl_name_for(e.split()[0]), e.split()[1])
+            for e in mine["ext_critical"])
     if "sig_alg_oid" in mine:
         out["sig_alg_openssl_name"] = openssl_name_for(mine["sig_alg_oid"])
         if mine["sig_alg_oid"] in GNUTLS_SIG:

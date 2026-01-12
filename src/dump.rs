@@ -8,6 +8,7 @@
 // repeats.
 
 use crate::cert::Cert;
+use crate::ext::Exts;
 use crate::key::{Key, Spki};
 use crate::name::Name;
 use crate::oid;
@@ -147,6 +148,33 @@ pub fn dump(c: &Cert) -> Dump {
     }
 
     d.put("has_extensions", yesno(c.extensions_tlv.is_some()));
+    if let Some(t) = &c.extensions_tlv {
+        match Exts::parse(t) {
+            Ok(x) => {
+                d.put("extension_count", x.list.len().to_string());
+                for e in &x.list {
+                    d.put(
+                        "extension",
+                        format!(
+                            "{} {} {} {}",
+                            e.oid.dotted(),
+                            if e.critical { "critical" } else { "noncritical" },
+                            e.value.len(),
+                            oid::name_or_dotted(&e.oid)
+                        ),
+                    );
+                    if e.critical_explicit_false {
+                        d.put("extension_critical_false_encoded", e.oid.dotted());
+                    }
+                }
+                for dup in x.duplicates() {
+                    d.put("extension_duplicate", dup);
+                }
+            }
+            Err(e) => d.put("extensions_error", e.to_string()),
+        }
+    }
+
     d.put("issuer_unique_id", yesno(c.issuer_unique_id.is_some()));
     d.put("subject_unique_id", yesno(c.subject_unique_id.is_some()));
     d

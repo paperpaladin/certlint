@@ -1,0 +1,109 @@
+// Extensions.
+//
+//   Extension ::= SEQUENCE { extnID OBJECT IDENTIFIER,
+//                            critical BOOLEAN DEFAULT FALSE,
+//                            extnValue OCTET STRING }
+//
+// The container first. Each extension's own structure is decoded on
+// demand, because an extension certlint does not understand must still be
+// listed, and a critical one it does not understand must still change the
+// verdict. RFC 5280 6.1.4 is explicit about that, and it is the rule a
+// linter is most tempted to drop.
+
+use crate::der::{err, Oid, Reader, Result, Tlv, CLASS_UNIVERSAL};
+use crate::der::{T_BOOLEAN, T_OCTET_STRING, T_SEQUENCE};
+
+pub struct Ext<'a> {
+    pub oid: Oid,
+    pub critical: bool,
+    // The contents of the extnValue OCTET STRING: the extension's own DER.
+    pub value: &'a [u8],
+    // The offset of the OCTET STRING's contents in the file, so that an
+    // error inside an extension can name where it is.
+    pub value_at: usize,
+    // DER forbids encoding a DEFAULT at its default value, so a critical
+    // field spelled FALSE is an encoding error. Recorded, not refused.
+    pub critical_explicit_false: bool,
+}
+
+pub struct Exts<'a> {
+    pub list: Vec<Ext<'a>>,
+}
+
+impl<'a> Exts<'a> {
+    pub fn parse(tlv: &Tlv<'a>) -> Result<Exts<'a>> {
+        tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "Extensions")?;
+        let mut r = tlv.reader();
+        let mut list = Vec::new();
+        if r.is_empty() {
+            return err(tlv.start, "the extensions field is present and empty");
+        }
+        while !r.is_empty() {
+            let e = r.read_tlv()?;
+            e.expect(CLASS_UNIVERSAL, T_SEQUENCE, "an Extension")?;
+            let mut er = e.reader();
+            let oid = er.read_tlv()?.oid()?;
+            let mut critical = false;
+            let mut critical_explicit_false = false;
+            let mut next = er.read_tlv()?;
+            if next.tag.is(CLASS_UNIVERSAL, T_BOOLEAN) {
+                critical = next.boolean()?;
+                critical_explicit_false = !critical;
+                next = er.read_tlv()?;
+            }
+            next.expect(CLASS_UNIVERSAL, T_OCTET_STRING, "extnValue")?;
+            if next.tag.constructed {
+                return err(next.start, "a constructed extnValue is BER, not DER");
+            }
+            er.expect_empty("an Extension")?;
+            list.push(Ext {
+                oid,
+                critical,
+                value: next.value,
+                value_at: next.start + next.hlen,
+                critical_explicit_false,
+            });
+        }
+        Ok(Exts { list })
+    }
+
+    pub fn get(&self, dotted: &str) -> Option<&Ext<'a>> {
+        self.list.iter().find(|e| e.oid.dotted() == dotted)
+    }
+
+    pub fn count(&self, dotted: &str) -> usize {
+        self.list.iter().filter(|e| e.oid.dotted() == dotted).count()
+    }
+
+    // RFC 5280 4.2: a certificate must not include more than one instance
+    // of an extension. Returned as a list so the linter can name them.
+    pub fn duplicates(&self) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut dup: Vec<String> = Vec::new();
+        for e in &self.list {
+            let d = e.oid.dotted();
+            if seen.contains(&d) {
+                if !dup.contains(&d) {
+                    dup.push(d.clone());
+                }
+            } else {
+                seen.push(d);
+            }
+        }
+        dup
+    }
+}
+
+impl<'a> Ext<'a> {
+    // A reader over the extension's own DER, with offsets that still point
+    // into the file.
+    pub fn reader(&self) -> Reader<'a> {
+        Reader::with_origin(self.value, self.value_at)
+    }
+
+    // Every extension's value is a single DER value filling the OCTET
+    // STRING. Trailing bytes after it are a defect, not padding.
+    pub fn only_tlv(&self) -> Result<Tlv<'a>> {
+        self.reader().read_only_tlv()
+    }
+}
