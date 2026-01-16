@@ -107,3 +107,56 @@ impl<'a> Ext<'a> {
         self.reader().read_only_tlv()
     }
 }
+
+// ---------------------------------------------------------------------------
+// BasicConstraints
+//
+//   BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE,
+//                                   pathLenConstraint INTEGER (0..MAX) OPTIONAL }
+
+pub struct BasicConstraints {
+    pub ca: bool,
+    pub path_len: Option<u64>,
+    // cA is a DEFAULT, so encoding it as FALSE is a DER error. Every
+    // implementation accepts it and openssl itself emits it for a leaf, so
+    // it is recorded for the linter.
+    pub ca_explicit_false: bool,
+}
+
+impl BasicConstraints {
+    pub fn parse(e: &Ext) -> Result<BasicConstraints> {
+        let tlv = e.only_tlv()?;
+        tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "BasicConstraints")?;
+        let mut r = tlv.reader();
+        let mut ca = false;
+        let mut ca_explicit_false = false;
+        let mut path_len = None;
+        if !r.is_empty() {
+            let first = r.read_tlv()?;
+            let next = if first.tag.is(CLASS_UNIVERSAL, T_BOOLEAN) {
+                ca = first.boolean()?;
+                ca_explicit_false = !ca;
+                if r.is_empty() {
+                    None
+                } else {
+                    Some(r.read_tlv()?)
+                }
+            } else {
+                Some(first)
+            };
+            if let Some(n) = next {
+                n.expect(CLASS_UNIVERSAL, crate::der::T_INTEGER, "pathLenConstraint")?;
+                if n.integer_is_negative()? {
+                    return err(n.start, "a negative pathLenConstraint");
+                }
+                path_len = Some(n.integer_u64()?);
+            }
+        }
+        r.expect_empty("BasicConstraints")?;
+        Ok(BasicConstraints {
+            ca,
+            path_len,
+            ca_explicit_false,
+        })
+    }
+}

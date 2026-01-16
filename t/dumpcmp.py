@@ -148,6 +148,11 @@ def canonical_ours(d):
         out["rsa_exponent"] = int(one("rsa_exponent"))
     if one("rsa_modulus_octets"):
         out["rsa_modulus_octets"] = int(one("rsa_modulus_octets"))
+    if one("basic_constraints_ca"):
+        out["bc_ca"] = one("basic_constraints_ca") == "yes"
+    if one("basic_constraints_pathlen"):
+        v = one("basic_constraints_pathlen")
+        out["bc_pathlen"] = None if v == "none" else int(v)
     if "extension" in d:
         out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
         out["ext_critical"] = tuple(
@@ -184,6 +189,12 @@ def from_cryptography(path):
             "%s %s" % (e.oid.dotted_string, "critical" if e.critical
                        else "noncritical") for e in c.extensions),
     }
+    try:
+        bc = c.extensions.get_extension_for_class(x509.BasicConstraints).value
+        out["bc_ca"] = bc.ca
+        out["bc_pathlen"] = bc.path_length
+    except x509.ExtensionNotFound:
+        pass
     spki = c.public_key().public_bytes(
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -225,6 +236,10 @@ def from_openssl(path):
     m = re.search(r"Public-Key: \((\d+) bit\)", text)
     if m:
         out["key_bits"] = int(m.group(1))
+    m = re.search(r"CA:(TRUE|FALSE)(, pathlen:(\d+))?", text)
+    if m:
+        out["bc_ca"] = m.group(1) == "TRUE"
+        out["bc_pathlen"] = int(m.group(3)) if m.group(3) else None
     exts = []
     inblock = False
     for line in text.splitlines():
@@ -330,6 +345,14 @@ def from_certtool(path):
     m = re.search(r"^\s*Signature Algorithm: (\S+)", text, re.M)
     if m:
         out["sig_alg_gnutls_name"] = m.group(1)
+    m = re.search(r"Certificate Authority \(CA\): (TRUE|FALSE)", text)
+    if m:
+        out["bc_ca"] = m.group(1) == "TRUE"
+    m = re.search(r"Path Length Constraint: (\d+)", text)
+    if m:
+        out["bc_pathlen"] = int(m.group(1))
+    elif "Certificate Authority (CA):" in text:
+        out["bc_pathlen"] = None
     names = []
     unknown = False
     for line in text.splitlines():

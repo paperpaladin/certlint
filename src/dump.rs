@@ -8,7 +8,7 @@
 // repeats.
 
 use crate::cert::Cert;
-use crate::ext::Exts;
+use crate::ext::{BasicConstraints, Exts};
 use crate::key::{Key, Spki};
 use crate::name::Name;
 use crate::oid;
@@ -165,6 +165,21 @@ pub fn dump(c: &Cert) -> Dump {
                     );
                     if e.critical_explicit_false {
                         d.put("extension_critical_false_encoded", e.oid.dotted());
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_BASIC_CONSTRAINTS) {
+                    match BasicConstraints::parse(e) {
+                        Ok(b) => {
+                            d.put("basic_constraints_ca", yesno(b.ca));
+                            match b.path_len {
+                                Some(n) => d.put("basic_constraints_pathlen", n.to_string()),
+                                None => d.put("basic_constraints_pathlen", "none"),
+                            }
+                            if b.ca_explicit_false {
+                                d.put("basic_constraints_ca_false_encoded", "yes");
+                            }
+                        }
+                        Err(e) => d.put("basic_constraints_error", e.to_string()),
                     }
                 }
                 for dup in x.duplicates() {
