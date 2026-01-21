@@ -59,6 +59,20 @@ GNUTLS_EXT = {
     "Inhibit anyPolicy": "2.5.29.54",
 }
 
+# The nine KeyUsage bits, in the three spellings the oracles use. RFC 5280
+# names them in the first column and certlint prints that.
+KU = [
+    ("digitalSignature", "digital_signature", "Digital signature."),
+    ("nonRepudiation", "content_commitment", "Non repudiation."),
+    ("keyEncipherment", "key_encipherment", "Key encipherment."),
+    ("dataEncipherment", "data_encipherment", "Data encipherment."),
+    ("keyAgreement", "key_agreement", "Key agreement."),
+    ("keyCertSign", "key_cert_sign", "Certificate signing."),
+    ("cRLSign", "crl_sign", "CRL signing."),
+    ("encipherOnly", "encipher_only", "Key encipher only."),
+    ("decipherOnly", "decipher_only", "Key decipher only."),
+]
+
 GNUTLS_SIG = {
     "1.2.840.113549.1.1.5": "RSA-SHA1",
     "1.2.840.113549.1.1.11": "RSA-SHA256",
@@ -153,6 +167,8 @@ def canonical_ours(d):
     if one("basic_constraints_pathlen"):
         v = one("basic_constraints_pathlen")
         out["bc_pathlen"] = None if v == "none" else int(v)
+    if one("key_usage") is not None:
+        out["key_usage"] = tuple(x for x in one("key_usage").split(",") if x)
     if "extension" in d:
         out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
         out["ext_critical"] = tuple(
@@ -193,6 +209,18 @@ def from_cryptography(path):
         bc = c.extensions.get_extension_for_class(x509.BasicConstraints).value
         out["bc_ca"] = bc.ca
         out["bc_pathlen"] = bc.path_length
+    except x509.ExtensionNotFound:
+        pass
+    try:
+        ku = c.extensions.get_extension_for_class(x509.KeyUsage).value
+        got = []
+        for rfc, attr, _ in KU:
+            try:
+                if getattr(ku, attr):
+                    got.append(rfc)
+            except ValueError:
+                pass  # encipher_only raises unless key_agreement is set
+        out["key_usage"] = tuple(got)
     except x509.ExtensionNotFound:
         pass
     spki = c.public_key().public_bytes(
@@ -240,6 +268,24 @@ def from_openssl(path):
     if m:
         out["bc_ca"] = m.group(1) == "TRUE"
         out["bc_pathlen"] = int(m.group(3)) if m.group(3) else None
+    m = re.search(r"X509v3 Key Usage:.*\n\s+(.*)", text)
+    if m:
+        # openssl prints its own names, comma separated.
+        OSSL_KU = {
+            "Digital Signature": "digitalSignature",
+            "Non Repudiation": "nonRepudiation",
+            "Key Encipherment": "keyEncipherment",
+            "Data Encipherment": "dataEncipherment",
+            "Key Agreement": "keyAgreement",
+            "Certificate Sign": "keyCertSign",
+            "CRL Sign": "cRLSign",
+            "Encipher Only": "encipherOnly",
+            "Decipher Only": "decipherOnly",
+        }
+        got = [OSSL_KU[x.strip()] for x in m.group(1).split(",")
+               if x.strip() in OSSL_KU]
+        if len(got) == len([x for x in m.group(1).split(",") if x.strip()]):
+            out["key_usage"] = tuple(got)
     exts = []
     inblock = False
     for line in text.splitlines():
@@ -353,6 +399,13 @@ def from_certtool(path):
         out["bc_pathlen"] = int(m.group(1))
     elif "Certificate Authority (CA):" in text:
         out["bc_pathlen"] = None
+    m = re.search(r"Key Usage \((?:critical|not critical)\):\n((?:\t{3}[^\t].*\n)+)", text)
+    if m:
+        want = {g: r for r, _, g in KU}
+        got = [want[l.strip()] for l in m.group(1).splitlines()
+               if l.strip() in want]
+        if len(got) == len(m.group(1).strip().splitlines()):
+            out["key_usage"] = tuple(got)
     names = []
     unknown = False
     for line in text.splitlines():
@@ -394,6 +447,11 @@ def main(argv):
     totals = {"cryptography": [0, 0], "openssl": [0, 0], "certtool": [0, 0]}
     refusals = 0
     dn_skipped = [0]
+    # What the corpus actually reaches. A comparison of a construct the
+    # corpus does not hold passes without running anything, so the reached
+    # set is printed next to the agreement counts.
+    reached = {"key usage bit": set(), "string type": set(),
+               "extension": set(), "signature algorithm": set()}
     oracle_conflicts = 0
     skipped = {}
     for path in files:
@@ -403,6 +461,11 @@ def main(argv):
             refusals += 1
             continue
         mine = derived(canonical_ours(mine))
+        reached["key usage bit"] |= set(mine.get("key_usage", ()))
+        reached["extension"] |= set(e.split()[0] for e in mine.get("ext_oids", ()))
+        reached["signature algorithm"].add(mine.get("sig_alg_oid"))
+        for k in ("issuer_attr_types", "subject_attr_types"):
+            reached["string type"] |= set(a.split()[1] for a in mine.get(k, ()))
         oracles = {
             "cryptography": from_cryptography(path),
             "openssl": from_openssl(path),
@@ -451,6 +514,10 @@ def main(argv):
     if dn_skipped[0]:
         print("    %d DN strings not compared: they hold an attribute type"
               " RFC 4514 does not name" % dn_skipped[0])
+    for what in sorted(reached):
+        got = sorted(x for x in reached[what] if x)
+        print("    %s reached by the corpus: %d (%s)"
+              % (what, len(got), " ".join(got)))
     print("    %d certificates, %d refused by certlint, %d oracle-versus-oracle"
           " disagreements" % (len(files), refusals, oracle_conflicts))
     return min(bad + refusals, 125)

@@ -160,3 +160,69 @@ impl BasicConstraints {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// KeyUsage
+//
+//   KeyUsage ::= BIT STRING { digitalSignature (0), ... decipherOnly (8) }
+//
+// Nine bits, so a certificate that uses decipherOnly needs two octets and
+// one that does not needs one. The bit that gets dropped is therefore the
+// last one, by a decoder that reads a single octet and stops.
+
+pub const KEY_USAGE_NAMES: [&str; 9] = [
+    "digitalSignature",
+    "nonRepudiation",
+    "keyEncipherment",
+    "dataEncipherment",
+    "keyAgreement",
+    "keyCertSign",
+    "cRLSign",
+    "encipherOnly",
+    "decipherOnly",
+];
+
+pub struct KeyUsage {
+    pub bits: [bool; 9],
+    pub declared_bits: usize,
+    // DER wants the trailing zero bits of a named-bit BIT STRING removed.
+    pub not_minimal: bool,
+}
+
+impl KeyUsage {
+    pub fn parse(e: &Ext) -> Result<KeyUsage> {
+        let tlv = e.only_tlv()?;
+        let bs = tlv.bit_string()?;
+        if bs.bits > 9 {
+            return err(tlv.start, format!("KeyUsage has {} bits, the type has 9", bs.bits));
+        }
+        let mut bits = [false; 9];
+        for (i, b) in bits.iter_mut().enumerate() {
+            *b = bs.get(i);
+        }
+        Ok(KeyUsage {
+            bits,
+            declared_bits: bs.bits,
+            not_minimal: bs.trailing_zero_bit,
+        })
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        KEY_USAGE_NAMES
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.bits[*i])
+            .map(|(_, n)| *n)
+            .collect()
+    }
+
+    pub fn has(&self, i: usize) -> bool {
+        self.bits[i]
+    }
+}
+
+pub const KU_DIGITAL_SIGNATURE: usize = 0;
+pub const KU_KEY_ENCIPHERMENT: usize = 2;
+pub const KU_KEY_AGREEMENT: usize = 4;
+pub const KU_KEY_CERT_SIGN: usize = 5;
+pub const KU_CRL_SIGN: usize = 6;

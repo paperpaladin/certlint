@@ -689,3 +689,55 @@ impl<'a> Tlv<'a> {
         }
     }
 }
+
+// A BIT STRING, as a bit count and the octets holding them. Under DER the
+// unused bits must be zero, and for a named-bit type the trailing zero bits
+// must have been removed, which makes the encoding of a set of flags
+// unique. The second rule is reported rather than enforced here, because
+// the value is still unambiguous and it is the linter's business.
+pub struct BitString<'a> {
+    pub bits: usize,
+    pub octets: &'a [u8],
+    pub trailing_zero_bit: bool,
+}
+
+impl<'a> Tlv<'a> {
+    pub fn bit_string(&self) -> Result<BitString<'a>> {
+        let v = self.primitive(T_BIT_STRING, "BIT STRING")?;
+        if v.is_empty() {
+            return err(self.start, "BIT STRING has no initial octet");
+        }
+        let unused = usize::from(v[0]);
+        if unused > 7 {
+            return err(self.start, format!("BIT STRING claims {} unused bits", unused));
+        }
+        let octets = &v[1..];
+        if octets.is_empty() && unused != 0 {
+            return err(self.start, "an empty BIT STRING with unused bits");
+        }
+        if let Some(last) = octets.last() {
+            if unused > 0 && last & ((1u8 << unused) - 1) != 0 {
+                return err(self.start, "BIT STRING unused bits are not zero");
+            }
+        }
+        let bits = octets.len() * 8 - unused;
+        let trailing_zero_bit = match octets.last() {
+            Some(last) => *last == 0 || (unused < 8 && (last >> unused) & 1 == 0),
+            None => false,
+        };
+        Ok(BitString {
+            bits,
+            octets,
+            trailing_zero_bit,
+        })
+    }
+}
+
+impl<'a> BitString<'a> {
+    pub fn get(&self, i: usize) -> bool {
+        if i >= self.bits {
+            return false;
+        }
+        self.octets[i / 8] & (0x80 >> (i % 8)) != 0
+    }
+}
