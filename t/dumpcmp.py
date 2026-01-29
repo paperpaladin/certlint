@@ -73,6 +73,16 @@ KU = [
     ("decipherOnly", "decipher_only", "Key decipher only."),
 ]
 
+GNUTLS_EKU = {
+    "1.3.6.1.5.5.7.3.1": "TLS WWW Server.",
+    "1.3.6.1.5.5.7.3.2": "TLS WWW Client.",
+    "1.3.6.1.5.5.7.3.3": "Code signing.",
+    "1.3.6.1.5.5.7.3.4": "Email protection.",
+    "1.3.6.1.5.5.7.3.8": "Time stamping.",
+    "1.3.6.1.5.5.7.3.9": "OCSP signing.",
+    "2.5.29.37.0": "Any purpose.",
+}
+
 GNUTLS_SIG = {
     "1.2.840.113549.1.1.5": "RSA-SHA1",
     "1.2.840.113549.1.1.11": "RSA-SHA256",
@@ -169,6 +179,8 @@ def canonical_ours(d):
         out["bc_pathlen"] = None if v == "none" else int(v)
     if one("key_usage") is not None:
         out["key_usage"] = tuple(x for x in one("key_usage").split(",") if x)
+    if one("ext_key_usage") is not None:
+        out["eku"] = tuple(x for x in one("ext_key_usage").split(",") if x)
     if "extension" in d:
         out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
         out["ext_critical"] = tuple(
@@ -221,6 +233,11 @@ def from_cryptography(path):
             except ValueError:
                 pass  # encipher_only raises unless key_agreement is set
         out["key_usage"] = tuple(got)
+    except x509.ExtensionNotFound:
+        pass
+    try:
+        eku = c.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+        out["eku"] = tuple(o.dotted_string for o in eku)
     except x509.ExtensionNotFound:
         pass
     spki = c.public_key().public_bytes(
@@ -286,6 +303,9 @@ def from_openssl(path):
                if x.strip() in OSSL_KU]
         if len(got) == len([x for x in m.group(1).split(",") if x.strip()]):
             out["key_usage"] = tuple(got)
+    m = re.search(r"X509v3 Extended Key Usage:.*\n\s+(.*)", text)
+    if m:
+        out["eku_openssl_names"] = tuple(x.strip() for x in m.group(1).split(","))
     exts = []
     inblock = False
     for line in text.splitlines():
@@ -406,6 +426,9 @@ def from_certtool(path):
                if l.strip() in want]
         if len(got) == len(m.group(1).strip().splitlines()):
             out["key_usage"] = tuple(got)
+    m = re.search(r"Key Purpose \((?:critical|not critical)\):\n((?:\t{3}[^\t].*\n)+)", text)
+    if m:
+        out["eku_gnutls_names"] = tuple(l.strip() for l in m.group(1).splitlines())
     names = []
     unknown = False
     for line in text.splitlines():
@@ -435,6 +458,11 @@ def derived(mine):
         out["ext_openssl_names"] = tuple(
             "%s %s" % (openssl_name_for(e.split()[0]), e.split()[1])
             for e in mine["ext_critical"])
+    if "eku" in mine:
+        out["eku_openssl_names"] = tuple(openssl_name_for(o) for o in mine["eku"])
+        gn = tuple(GNUTLS_EKU[o] for o in mine["eku"] if o in GNUTLS_EKU)
+        if len(gn) == len(mine["eku"]):
+            out["eku_gnutls_names"] = gn
     if "sig_alg_oid" in mine:
         out["sig_alg_openssl_name"] = openssl_name_for(mine["sig_alg_oid"])
         if mine["sig_alg_oid"] in GNUTLS_SIG:

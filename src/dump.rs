@@ -8,7 +8,7 @@
 // repeats.
 
 use crate::cert::Cert;
-use crate::ext::{BasicConstraints, Exts, KeyUsage};
+use crate::ext::{BasicConstraints, ExtKeyUsage, Exts, KeyUsage};
 use crate::key::{Key, Spki};
 use crate::name::Name;
 use crate::oid;
@@ -192,6 +192,21 @@ pub fn dump(c: &Cert) -> Dump {
                             }
                         }
                         Err(e) => d.put("key_usage_error", e.to_string()),
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_EXT_KEY_USAGE) {
+                    match ExtKeyUsage::parse(e) {
+                        Ok(k) => {
+                            d.put(
+                                "ext_key_usage",
+                                k.purposes
+                                    .iter()
+                                    .map(|p| p.dotted())
+                                    .collect::<Vec<_>>()
+                                    .join(","),
+                            );
+                        }
+                        Err(e) => d.put("ext_key_usage_error", e.to_string()),
                     }
                 }
                 for dup in x.duplicates() {

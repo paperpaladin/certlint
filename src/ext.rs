@@ -226,3 +226,36 @@ pub const KU_KEY_ENCIPHERMENT: usize = 2;
 pub const KU_KEY_AGREEMENT: usize = 4;
 pub const KU_KEY_CERT_SIGN: usize = 5;
 pub const KU_CRL_SIGN: usize = 6;
+
+// ---------------------------------------------------------------------------
+// ExtendedKeyUsage
+//
+//   ExtKeyUsageSyntax ::= SEQUENCE SIZE (1..MAX) OF KeyPurposeId
+//
+// anyExtendedKeyUsage is an OID like any other here. RFC 5280 says a
+// certificate with it should be treated as having no EKU restriction at
+// all, which is a decision for the purpose check and not for the decoder.
+
+pub struct ExtKeyUsage {
+    pub purposes: Vec<Oid>,
+}
+
+impl ExtKeyUsage {
+    pub fn parse(e: &Ext) -> Result<ExtKeyUsage> {
+        let tlv = e.only_tlv()?;
+        tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "ExtKeyUsageSyntax")?;
+        let mut r = tlv.reader();
+        let mut purposes = Vec::new();
+        while !r.is_empty() {
+            purposes.push(r.read_tlv()?.oid()?);
+        }
+        if purposes.is_empty() {
+            return err(tlv.start, "an empty ExtendedKeyUsage");
+        }
+        Ok(ExtKeyUsage { purposes })
+    }
+
+    pub fn has(&self, dotted: &str) -> bool {
+        self.purposes.iter().any(|p| p.dotted() == dotted)
+    }
+}
