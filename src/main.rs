@@ -8,6 +8,7 @@ mod cert;
 mod der;
 mod dump;
 mod ext;
+mod gname;
 mod key;
 mod name;
 mod oid;

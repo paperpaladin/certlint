@@ -9,6 +9,7 @@
 
 use crate::cert::Cert;
 use crate::ext::{BasicConstraints, ExtKeyUsage, Exts, KeyUsage};
+use crate::gname::parse_general_names_der;
 use crate::key::{Key, Spki};
 use crate::name::Name;
 use crate::oid;
@@ -207,6 +208,23 @@ pub fn dump(c: &Cert) -> Dump {
                             );
                         }
                         Err(e) => d.put("ext_key_usage_error", e.to_string()),
+                    }
+                }
+                for (which, what) in [
+                    (oid::EXT_SUBJECT_ALT_NAME, "san"),
+                    (oid::EXT_ISSUER_ALT_NAME, "ian"),
+                ] {
+                    if let Some(e) = x.get(which) {
+                        match parse_general_names_der(e.value, e.value_at) {
+                            Ok(names) => {
+                                d.put(&format!("{}_count", what), names.len().to_string());
+                                for n in &names {
+                                    d.put(what, n.text());
+                                    d.put(&format!("{}_kind", what), n.kind().to_string());
+                                }
+                            }
+                            Err(e) => d.put(&format!("{}_error", what), e.to_string()),
+                        }
                     }
                 }
                 for dup in x.duplicates() {

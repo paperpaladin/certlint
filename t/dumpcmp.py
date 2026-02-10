@@ -181,11 +181,36 @@ def canonical_ours(d):
         out["key_usage"] = tuple(x for x in one("key_usage").split(",") if x)
     if one("ext_key_usage") is not None:
         out["eku"] = tuple(x for x in one("ext_key_usage").split(",") if x)
+    for key, dest in (("san", "san"), ("ian", "ian")):
+        if key in d:
+            out[dest] = tuple(d[key])
     if "extension" in d:
         out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
         out["ext_critical"] = tuple(
             "%s %s" % (e.split()[0], e.split()[1]) for e in d["extension"])
     return out
+
+
+def general_name_text(g):
+    """cryptography's GeneralName in the spelling certlint prints."""
+    if isinstance(g, x509.DNSName):
+        return "DNS:" + g.value
+    if isinstance(g, x509.RFC822Name):
+        return "email:" + g.value
+    if isinstance(g, x509.UniformResourceIdentifier):
+        return "URI:" + g.value
+    if isinstance(g, x509.IPAddress):
+        v = g.value
+        if hasattr(v, "network_address"):
+            return "IP:%s/%s" % (v.network_address, v.netmask)
+        return "IP:" + str(v)
+    if isinstance(g, x509.DirectoryName):
+        return "DirName:" + g.value.rfc4514_string()
+    if isinstance(g, x509.RegisteredID):
+        return "RID:" + g.value.dotted_string
+    if isinstance(g, x509.OtherName):
+        return "otherName:%s:%d" % (g.type_id.dotted_string, len(g.value))
+    return "unknown:" + repr(g)
 
 
 def from_cryptography(path):
@@ -240,6 +265,13 @@ def from_cryptography(path):
         out["eku"] = tuple(o.dotted_string for o in eku)
     except x509.ExtensionNotFound:
         pass
+    for cls, dest in ((x509.SubjectAlternativeName, "san"),
+                      (x509.IssuerAlternativeName, "ian")):
+        try:
+            names = c.extensions.get_extension_for_class(cls).value
+        except x509.ExtensionNotFound:
+            continue
+        out[dest] = tuple(general_name_text(g) for g in names)
     spki = c.public_key().public_bytes(
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -267,7 +299,7 @@ def openssl_date(text):
     return int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
-def from_openssl(path):
+def from_openssl(path, dropped=[0]):
     out = {}
     rc, text, _ = run(["openssl", "x509", "-in", path, "-noout", "-text"])
     if rc != 0:
@@ -306,6 +338,18 @@ def from_openssl(path):
     m = re.search(r"X509v3 Extended Key Usage:.*\n\s+(.*)", text)
     if m:
         out["eku_openssl_names"] = tuple(x.strip() for x in m.group(1).split(","))
+    for extname, dest in (("subjectAltName", "san"), ("issuerAltName", "ian")):
+        rc, s2, _ = run(["openssl", "x509", "-in", path, "-noout", "-ext",
+                         extname])
+        if rc != 0 or ":" not in s2:
+            continue
+        body = " ".join(l.strip() for l in s2.splitlines()[1:])
+        names = [x.strip() for x in body.split(",") if x.strip()]
+        conv = [openssl_gn(x) for x in names]
+        if all(conv):
+            out[dest] = tuple(conv)
+        else:
+            dropped[0] += 1
     exts = []
     inblock = False
     for line in text.splitlines():
@@ -350,6 +394,21 @@ def from_openssl(path):
         if rc == 0 and "=" in s:
             out[key + "_rfc4514"] = s.split("=", 1)[1].strip()
     return out
+
+
+# openssl writes a few of the GeneralName types with its own prefixes, and
+# writes a DirName in a slash-separated form that is not RFC 4514 at all.
+# A name it writes in a form this cannot convert drops the whole list for
+# that certificate, and the drops are counted.
+def openssl_gn(s):
+    if s.startswith("IP Address:"):
+        return "IP:" + s[len("IP Address:"):]
+    if s.startswith("Registered ID:"):
+        return "RID:" + s[len("Registered ID:"):]
+    for p in ("DNS:", "email:", "URI:", "IP:"):
+        if s.startswith(p):
+            return s
+    return None
 
 
 def openssl_name_lines(text, want_type=False):
@@ -429,6 +488,27 @@ def from_certtool(path):
     m = re.search(r"Key Purpose \((?:critical|not critical)\):\n((?:\t{3}[^\t].*\n)+)", text)
     if m:
         out["eku_gnutls_names"] = tuple(l.strip() for l in m.group(1).splitlines())
+    GN = {"DNSname": "DNS", "RFC822Name": "email", "URI": "URI",
+          "IPAddress": "IP"}
+    for header, dest in (("Subject Alternative Name", "san"),
+                         ("Issuer Alternative Name", "ian")):
+        m = re.search(r"%s \((?:critical|not critical)\):\n((?:\t{3}[^\t].*\n)+)"
+                      % header, text)
+        if not m:
+            continue
+        got = []
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if ": " not in line:
+                got = None
+                break
+            k, v = line.split(": ", 1)
+            if k not in GN:
+                got = None
+                break
+            got.append("%s:%s" % (GN[k], v))
+        if got is not None:
+            out[dest] = tuple(got)
     names = []
     unknown = False
     for line in text.splitlines():
@@ -475,11 +555,13 @@ def main(argv):
     totals = {"cryptography": [0, 0], "openssl": [0, 0], "certtool": [0, 0]}
     refusals = 0
     dn_skipped = [0]
+    gn_dropped = [0]
     # What the corpus actually reaches. A comparison of a construct the
     # corpus does not hold passes without running anything, so the reached
     # set is printed next to the agreement counts.
     reached = {"key usage bit": set(), "string type": set(),
-               "extension": set(), "signature algorithm": set()}
+               "extension": set(), "signature algorithm": set(),
+               "general name type": set()}
     oracle_conflicts = 0
     skipped = {}
     for path in files:
@@ -492,11 +574,14 @@ def main(argv):
         reached["key usage bit"] |= set(mine.get("key_usage", ()))
         reached["extension"] |= set(e.split()[0] for e in mine.get("ext_oids", ()))
         reached["signature algorithm"].add(mine.get("sig_alg_oid"))
+        for k in ("san", "ian"):
+            reached["general name type"] |= set(
+                x.split(":", 1)[0] for x in mine.get(k, ()))
         for k in ("issuer_attr_types", "subject_attr_types"):
             reached["string type"] |= set(a.split()[1] for a in mine.get(k, ()))
         oracles = {
             "cryptography": from_cryptography(path),
-            "openssl": from_openssl(path),
+            "openssl": from_openssl(path, gn_dropped),
             "certtool": from_certtool(path),
         }
         # The DN string is only comparable when every attribute type in it
@@ -539,6 +624,10 @@ def main(argv):
     if skipped:
         print("    not compared (no certlint field): %s"
               % ", ".join("%s %d" % (k, n) for k, n in sorted(skipped.items())))
+    if gn_dropped[0]:
+        print("    %d alternative-name lists not compared against openssl:"
+              " it prints a name type in a form the harness cannot convert"
+              % gn_dropped[0])
     if dn_skipped[0]:
         print("    %d DN strings not compared: they hold an attribute type"
               " RFC 4514 does not name" % dn_skipped[0])
