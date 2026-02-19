@@ -19,6 +19,7 @@ failure, and averaging it away would lose the only interesting thing in
 the output.
 """
 import datetime
+import ipaddress
 import re
 import subprocess
 import sys
@@ -181,7 +182,9 @@ def canonical_ours(d):
         out["key_usage"] = tuple(x for x in one("key_usage").split(",") if x)
     if one("ext_key_usage") is not None:
         out["eku"] = tuple(x for x in one("ext_key_usage").split(",") if x)
-    for key, dest in (("san", "san"), ("ian", "ian")):
+    for key, dest in (("san", "san"), ("ian", "ian"),
+                      ("name_constraint_permitted", "nc_permitted"),
+                      ("name_constraint_excluded", "nc_excluded")):
         if key in d:
             out[dest] = tuple(d[key])
     if "extension" in d:
@@ -272,6 +275,15 @@ def from_cryptography(path):
         except x509.ExtensionNotFound:
             continue
         out[dest] = tuple(general_name_text(g) for g in names)
+    try:
+        nc = c.extensions.get_extension_for_class(x509.NameConstraints).value
+        for attr, dest in (("permitted_subtrees", "nc_permitted"),
+                           ("excluded_subtrees", "nc_excluded")):
+            v = getattr(nc, attr)
+            if v is not None:
+                out[dest] = tuple(general_name_text(g) for g in v)
+    except x509.ExtensionNotFound:
+        pass
     spki = c.public_key().public_bytes(
         serialization.Encoding.DER,
         serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -348,6 +360,29 @@ def from_openssl(path, dropped=[0]):
         conv = [openssl_gn(x) for x in names]
         if all(conv):
             out[dest] = tuple(conv)
+        else:
+            dropped[0] += 1
+    m = re.search(r"X509v3 Name Constraints:.*\n((?: {16}.*\n)+)", text)
+    if m:
+        where = None
+        got = {"nc_permitted": [], "nc_excluded": []}
+        ok = True
+        for line in m.group(1).splitlines():
+            t = line.strip()
+            if t == "Permitted:":
+                where = "nc_permitted"
+            elif t == "Excluded:":
+                where = "nc_excluded"
+            elif where:
+                c2 = openssl_gn(t)
+                if c2 is None:
+                    ok = False
+                else:
+                    got[where].append(c2)
+        if ok:
+            for k, v in got.items():
+                if v:
+                    out[k] = tuple(v)
         else:
             dropped[0] += 1
     exts = []
@@ -490,6 +525,36 @@ def from_certtool(path):
         out["eku_gnutls_names"] = tuple(l.strip() for l in m.group(1).splitlines())
     GN = {"DNSname": "DNS", "RFC822Name": "email", "URI": "URI",
           "IPAddress": "IP"}
+    m = re.search(r"Name Constraints \((?:critical|not critical)\):\n"
+                  r"((?:\t{3,}[^\t].*\n)+)", text)
+    if m:
+        where = None
+        got = {"nc_permitted": [], "nc_excluded": []}
+        ok = True
+        for line in m.group(1).splitlines():
+            t = line.strip()
+            if t == "Permitted:":
+                where = "nc_permitted"
+            elif t == "Excluded:":
+                where = "nc_excluded"
+            elif where and ": " in t:
+                k, v = t.split(": ", 1)
+                if k not in GN:
+                    ok = False
+                    continue
+                if k == "IPAddress" and "/" in v:
+                    # GnuTLS writes a constraint as CIDR where openssl and
+                    # certlint write address/mask. Same value, so the
+                    # harness converts rather than calling it a difference.
+                    net = ipaddress.ip_network(v, strict=False)
+                    v = "%s/%s" % (net.network_address, net.netmask)
+                got[where].append("%s:%s" % (GN[k], v))
+            else:
+                ok = False
+        if ok:
+            for k, v in got.items():
+                if v:
+                    out[k] = tuple(v)
     for header, dest in (("Subject Alternative Name", "san"),
                          ("Issuer Alternative Name", "ian")):
         m = re.search(r"%s \((?:critical|not critical)\):\n((?:\t{3}[^\t].*\n)+)"
@@ -574,7 +639,7 @@ def main(argv):
         reached["key usage bit"] |= set(mine.get("key_usage", ()))
         reached["extension"] |= set(e.split()[0] for e in mine.get("ext_oids", ()))
         reached["signature algorithm"].add(mine.get("sig_alg_oid"))
-        for k in ("san", "ian"):
+        for k in ("san", "ian", "nc_permitted", "nc_excluded"):
             reached["general name type"] |= set(
                 x.split(":", 1)[0] for x in mine.get(k, ()))
         for k in ("issuer_attr_types", "subject_attr_types"):

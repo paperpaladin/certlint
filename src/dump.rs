@@ -8,7 +8,7 @@
 // repeats.
 
 use crate::cert::Cert;
-use crate::ext::{BasicConstraints, ExtKeyUsage, Exts, KeyUsage};
+use crate::ext::{BasicConstraints, ExtKeyUsage, Exts, KeyUsage, NameConstraints};
 use crate::gname::parse_general_names_der;
 use crate::key::{Key, Spki};
 use crate::name::Name;
@@ -225,6 +225,36 @@ pub fn dump(c: &Cert) -> Dump {
                             }
                             Err(e) => d.put(&format!("{}_error", what), e.to_string()),
                         }
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_NAME_CONSTRAINTS) {
+                    match NameConstraints::parse(e) {
+                        Ok(n) => {
+                            for (what, list) in
+                                [("permitted", &n.permitted), ("excluded", &n.excluded)]
+                            {
+                                d.put(
+                                    &format!("name_constraint_{}_count", what),
+                                    list.len().to_string(),
+                                );
+                                for st in list {
+                                    d.put(
+                                        &format!("name_constraint_{}", what),
+                                        st.base.text(),
+                                    );
+                                    if st.minimum.is_some() || st.maximum.is_some() {
+                                        d.put(
+                                            &format!("name_constraint_{}_distance", what),
+                                            format!(
+                                                "{:?} {:?}",
+                                                st.minimum, st.maximum
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => d.put("name_constraints_error", e.to_string()),
                     }
                 }
                 for dup in x.duplicates() {

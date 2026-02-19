@@ -93,6 +93,49 @@ sign inter-ec root-ec sub.ext 1825
 req "/C=GB/O=certlint/CN=ec.example.com" ec:p256.pem leaf-ec
 sign leaf-ec inter-ec leafec.ext 90
 
+# A root with name constraints, and two leaves: one inside the permitted
+# subtrees and one inside an excluded one. Without these the name
+# constraints code would be checked against a corpus that holds none.
+cat > nc.ext <<'X'
+[ req ]
+distinguished_name = dn
+prompt = no
+[ dn ]
+CN = unused
+[ v3 ]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+nameConstraints = critical,permitted;DNS:example.org,permitted;IP:192.0.2.0/255.255.255.0,permitted;email:example.org,excluded;DNS:bad.example.org,excluded;URI:.bad.example.net
+X
+
+cat > ncleaf.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:host.example.org,IP:192.0.2.9
+X
+
+cat > ncbad.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:host.bad.example.org
+X
+
+selfsign root-nc "/C=GB/O=certlint/CN=certlint Constrained Root" rsa:2048 nc.ext 3650
+req "/C=GB/O=certlint/CN=host.example.org" rsa:2048 leaf-nc-ok
+sign leaf-nc-ok root-nc ncleaf.ext 90
+req "/C=GB/O=certlint/CN=host.bad.example.org" rsa:2048 leaf-nc-bad
+sign leaf-nc-bad root-nc ncbad.ext 90
+
+rm -f nc.ext ncleaf.ext ncbad.ext
 rm -f ca.ext sub.ext leaf.ext leafec.ext p256.pem p384.pem *.csr
 n=$(ls *.pem | wc -l)
 echo "corpus: $n certificates in $OUT"

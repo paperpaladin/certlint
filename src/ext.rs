@@ -259,3 +259,121 @@ impl ExtKeyUsage {
         self.purposes.iter().any(|p| p.dotted() == dotted)
     }
 }
+
+// ---------------------------------------------------------------------------
+// NameConstraints
+//
+//   NameConstraints ::= SEQUENCE { permittedSubtrees [0] GeneralSubtrees
+//                                                        OPTIONAL,
+//                                  excludedSubtrees  [1] GeneralSubtrees
+//                                                        OPTIONAL }
+//   GeneralSubtree ::= SEQUENCE { base GeneralName,
+//                                 minimum [0] BaseDistance DEFAULT 0,
+//                                 maximum [1] BaseDistance OPTIONAL }
+//
+// RFC 5280 4.2.1.10 requires minimum to be absent and maximum to be absent.
+// They are parsed anyway, because a certificate that carries them is one
+// the linter should report, and a decoder that refuses them cannot report
+// anything.
+
+use crate::gname::GeneralName;
+
+pub struct Subtree<'a> {
+    pub base: GeneralName<'a>,
+    pub minimum: Option<u64>,
+    pub maximum: Option<u64>,
+}
+
+pub struct NameConstraints<'a> {
+    pub permitted: Vec<Subtree<'a>>,
+    pub excluded: Vec<Subtree<'a>>,
+}
+
+fn parse_subtrees<'a>(tlv: &Tlv<'a>) -> Result<Vec<Subtree<'a>>> {
+    let mut r = tlv.reader();
+    let mut out = Vec::new();
+    while !r.is_empty() {
+        let st = r.read_tlv()?;
+        st.expect(CLASS_UNIVERSAL, T_SEQUENCE, "a GeneralSubtree")?;
+        let mut sr = st.reader();
+        let base = GeneralName::parse(&sr.read_tlv()?)?;
+        let mut minimum = None;
+        let mut maximum = None;
+        while !sr.is_empty() {
+            let x = sr.read_tlv()?;
+            match (x.tag.class, x.tag.number, x.tag.constructed) {
+                (crate::der::CLASS_CONTEXT, 0, false) => {
+                    minimum = Some(int_from_implicit(&x)?)
+                }
+                (crate::der::CLASS_CONTEXT, 1, false) => {
+                    maximum = Some(int_from_implicit(&x)?)
+                }
+                _ => {
+                    return err(
+                        x.start,
+                        format!("unexpected {} in a GeneralSubtree", x.tag.name()),
+                    )
+                }
+            }
+        }
+        out.push(Subtree {
+            base,
+            minimum,
+            maximum,
+        });
+    }
+    if out.is_empty() {
+        return err(tlv.start, "an empty GeneralSubtrees");
+    }
+    Ok(out)
+}
+
+// A BaseDistance carries an implicit context tag, so its content octets
+// are an INTEGER's without the INTEGER tag in front of them.
+fn int_from_implicit(tlv: &Tlv) -> Result<u64> {
+    let v = tlv.value;
+    if v.is_empty() {
+        return err(tlv.start, "an empty BaseDistance");
+    }
+    if v[0] & 0x80 != 0 {
+        return err(tlv.start, "a negative BaseDistance");
+    }
+    if v.len() > 8 {
+        return err(tlv.start, "a BaseDistance that does not fit in 64 bits");
+    }
+    let mut n = 0u64;
+    for b in v {
+        n = (n << 8) | u64::from(*b);
+    }
+    Ok(n)
+}
+
+impl<'a> NameConstraints<'a> {
+    pub fn parse(e: &Ext<'a>) -> Result<NameConstraints<'a>> {
+        let tlv = e.only_tlv()?;
+        tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "NameConstraints")?;
+        let mut r = tlv.reader();
+        let mut permitted = Vec::new();
+        let mut excluded = Vec::new();
+        while !r.is_empty() {
+            let x = r.read_tlv()?;
+            match (x.tag.class, x.tag.number) {
+                (crate::der::CLASS_CONTEXT, 0) => permitted = parse_subtrees(&x)?,
+                (crate::der::CLASS_CONTEXT, 1) => excluded = parse_subtrees(&x)?,
+                _ => {
+                    return err(
+                        x.start,
+                        format!("unexpected {} in NameConstraints", x.tag.name()),
+                    )
+                }
+            }
+        }
+        if permitted.is_empty() && excluded.is_empty() {
+            return err(tlv.start, "a NameConstraints with neither subtree");
+        }
+        Ok(NameConstraints {
+            permitted,
+            excluded,
+        })
+    }
+}
