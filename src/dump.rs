@@ -8,7 +8,8 @@
 // repeats.
 
 use crate::cert::Cert;
-use crate::ext::{BasicConstraints, ExtKeyUsage, Exts, KeyUsage, NameConstraints};
+use crate::ext::{access_descriptions, distribution_points, policies, subject_key_id};
+use crate::ext::{AuthorityKeyId, BasicConstraints, ExtKeyUsage, Exts, KeyUsage, NameConstraints};
 use crate::gname::parse_general_names_der;
 use crate::key::{Key, Spki};
 use crate::name::Name;
@@ -32,6 +33,14 @@ impl Dump {
             println!("{} = {}", k, v);
         }
     }
+}
+
+fn hex(v: &[u8]) -> String {
+    let mut s = String::with_capacity(v.len() * 2);
+    for b in v {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
 }
 
 fn yesno(b: bool) -> &'static str {
@@ -255,6 +264,76 @@ pub fn dump(c: &Cert) -> Dump {
                             }
                         }
                         Err(e) => d.put("name_constraints_error", e.to_string()),
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_SUBJECT_KEY_ID) {
+                    match subject_key_id(e) {
+                        Ok(v) => d.put("subject_key_id", hex(v)),
+                        Err(e) => d.put("subject_key_id_error", e.to_string()),
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_AUTHORITY_KEY_ID) {
+                    match AuthorityKeyId::parse(e) {
+                        Ok(a) => {
+                            if let Some(k) = a.key_id {
+                                d.put("authority_key_id", hex(k));
+                            }
+                            for n in &a.issuer {
+                                d.put("authority_cert_issuer", n.text());
+                            }
+                            if let Some(s) = &a.serial {
+                                d.put("authority_cert_serial", hex(s));
+                            }
+                        }
+                        Err(e) => d.put("authority_key_id_error", e.to_string()),
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_AUTHORITY_INFO_ACCESS) {
+                    match access_descriptions(e) {
+                        Ok(v) => {
+                            for ad in &v {
+                                d.put(
+                                    "aia",
+                                    format!("{} {}", ad.method.dotted(), ad.location.text()),
+                                );
+                            }
+                        }
+                        Err(e) => d.put("aia_error", e.to_string()),
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_CRL_DISTRIBUTION) {
+                    match distribution_points(e) {
+                        Ok(v) => {
+                            d.put("crldp_count", v.len().to_string());
+                            for dp in &v {
+                                for n in &dp.full_name {
+                                    d.put("crldp", n.text());
+                                }
+                                if dp.relative_name.is_some() {
+                                    d.put("crldp_relative_name", "yes");
+                                }
+                                if let Some(r) = dp.reasons {
+                                    d.put("crldp_reason_bits", r.to_string());
+                                }
+                                for n in &dp.crl_issuer {
+                                    d.put("crldp_issuer", n.text());
+                                }
+                            }
+                        }
+                        Err(e) => d.put("crldp_error", e.to_string()),
+                    }
+                }
+                if let Some(e) = x.get(oid::EXT_CERTIFICATE_POLICIES) {
+                    match policies(e) {
+                        Ok(v) => {
+                            for p in &v {
+                                d.put("policy", p.id.dotted());
+                                for (q, t) in &p.qualifiers {
+                                    d.put("policy_qualifier", format!("{} {} {}", p.id.dotted(), q.dotted(), t));
+                                }
+                            }
+                        }
+                        Err(e) => d.put("policies_error", e.to_string()),
                     }
                 }
                 for dup in x.duplicates() {

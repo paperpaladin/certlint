@@ -93,6 +93,39 @@ sign inter-ec root-ec sub.ext 1825
 req "/C=GB/O=certlint/CN=ec.example.com" ec:p256.pem leaf-ec
 sign leaf-ec inter-ec leafec.ext 90
 
+# One certificate carrying as many constructs as openssl will emit at
+# once, so that the decoders for them are not checked against a corpus
+# that holds none: all nine key usage bits, six extended key usages, five
+# GeneralName types in the SAN, AIA, CRL distribution points and two
+# policies with a CPS qualifier.
+cat > full.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,nonRepudiation,keyEncipherment,dataEncipherment,keyAgreement,encipherOnly,decipherOnly
+extendedKeyUsage = serverAuth,clientAuth,emailProtection,timeStamping,OCSPSigning,codeSigning
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer:always
+subjectAltName = @alt
+authorityInfoAccess = OCSP;URI:http://ocsp.example.com/,caIssuers;URI:http://ca.example.com/ca.crt
+crlDistributionPoints = URI:http://crl.example.com/a.crl,URI:ldap://crl.example.com/a
+certificatePolicies = 2.23.140.1.2.1,@cps
+[ alt ]
+DNS.1 = wild.example.com
+DNS.2 = *.wild.example.com
+email = person@example.com
+URI = https://example.com/path
+IP.1 = 198.51.100.4
+IP.2 = 2001:db8::1
+RID = 1.2.3.4
+[ cps ]
+policyIdentifier = 1.3.6.1.4.1.99999.1
+CPS.1 = http://cps.example.com/
+X
+
+req "/C=GB/O=certlint/OU=Testing/L=London/ST=Greater London/CN=full.example.com" rsa:2048 leaf-full
+sign leaf-full inter-rsa full.ext 90
+rm -f full.ext
+
 # A root with name constraints, and two leaves: one inside the permitted
 # subtrees and one inside an excluded one. Without these the name
 # constraints code would be checked against a corpus that holds none.

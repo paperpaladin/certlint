@@ -73,6 +73,10 @@ pub const KP_OCSP_SIGNING: &str = "1.3.6.1.5.5.7.3.9";
 pub const KP_ANY: &str = "2.5.29.37.0";
 
 // Policies named by the Baseline Requirements.
+pub const CPS_URI: &str = "1.3.6.1.5.5.7.2.1";
+pub const UNOTICE: &str = "1.3.6.1.5.5.7.2.2";
+pub const AD_OCSP: &str = "1.3.6.1.5.5.7.48.1";
+pub const AD_CA_ISSUERS: &str = "1.3.6.1.5.5.7.48.2";
 pub const POLICY_ANY: &str = "2.5.29.32.0";
 pub const POLICY_DV: &str = "2.23.140.1.2.1";
 pub const POLICY_OV: &str = "2.23.140.1.2.2";

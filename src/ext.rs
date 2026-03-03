@@ -377,3 +377,226 @@ impl<'a> NameConstraints<'a> {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// The identifier and pointer extensions.
+//
+//   SubjectKeyIdentifier ::= OCTET STRING
+//   AuthorityKeyIdentifier ::= SEQUENCE {
+//     keyIdentifier             [0] OCTET STRING OPTIONAL,
+//     authorityCertIssuer       [1] GeneralNames OPTIONAL,
+//     authorityCertSerialNumber [2] CertificateSerialNumber OPTIONAL }
+//
+// The AKI is a hint, never a decision: RFC 5280 6.1 builds paths by name
+// and signature, and an AKI that matches nothing must not remove a
+// candidate. It is decoded here so the path builder can order candidates
+// by it.
+
+pub struct AuthorityKeyId<'a> {
+    pub key_id: Option<&'a [u8]>,
+    pub issuer: Vec<GeneralName<'a>>,
+    pub serial: Option<Vec<u8>>,
+    pub serial_negative: bool,
+}
+
+impl<'a> AuthorityKeyId<'a> {
+    pub fn parse(e: &Ext<'a>) -> Result<AuthorityKeyId<'a>> {
+        let tlv = e.only_tlv()?;
+        tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "AuthorityKeyIdentifier")?;
+        let mut r = tlv.reader();
+        let mut out = AuthorityKeyId {
+            key_id: None,
+            issuer: Vec::new(),
+            serial: None,
+            serial_negative: false,
+        };
+        while !r.is_empty() {
+            let x = r.read_tlv()?;
+            match (x.tag.class, x.tag.number, x.tag.constructed) {
+                (crate::der::CLASS_CONTEXT, 0, false) => out.key_id = Some(x.value),
+                (crate::der::CLASS_CONTEXT, 1, true) => {
+                    let mut ir = x.reader();
+                    while !ir.is_empty() {
+                        out.issuer.push(GeneralName::parse(&ir.read_tlv()?)?);
+                    }
+                }
+                (crate::der::CLASS_CONTEXT, 2, false) => {
+                    if x.value.is_empty() {
+                        return err(x.start, "an empty authorityCertSerialNumber");
+                    }
+                    out.serial_negative = x.value[0] & 0x80 != 0;
+                    out.serial = Some(x.value.to_vec());
+                }
+                _ => {
+                    return err(
+                        x.start,
+                        format!("unexpected {} in AuthorityKeyIdentifier", x.tag.name()),
+                    )
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+pub fn subject_key_id<'a>(e: &Ext<'a>) -> Result<&'a [u8]> {
+    let tlv = e.only_tlv()?;
+    tlv.expect(CLASS_UNIVERSAL, crate::der::T_OCTET_STRING, "SubjectKeyIdentifier")?;
+    Ok(tlv.value)
+}
+
+//   AuthorityInfoAccessSyntax ::= SEQUENCE SIZE (1..MAX) OF AccessDescription
+//   AccessDescription ::= SEQUENCE { accessMethod OBJECT IDENTIFIER,
+//                                    accessLocation GeneralName }
+pub struct AccessDescription<'a> {
+    pub method: Oid,
+    pub location: GeneralName<'a>,
+}
+
+pub fn access_descriptions<'a>(e: &Ext<'a>) -> Result<Vec<AccessDescription<'a>>> {
+    let tlv = e.only_tlv()?;
+    tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "an access description list")?;
+    let mut r = tlv.reader();
+    let mut out = Vec::new();
+    while !r.is_empty() {
+        let ad = r.read_tlv()?;
+        ad.expect(CLASS_UNIVERSAL, T_SEQUENCE, "an AccessDescription")?;
+        let mut ar = ad.reader();
+        let method = ar.read_tlv()?.oid()?;
+        let location = GeneralName::parse(&ar.read_tlv()?)?;
+        ar.expect_empty("an AccessDescription")?;
+        out.push(AccessDescription { method, location });
+    }
+    if out.is_empty() {
+        return err(tlv.start, "an empty access description list");
+    }
+    Ok(out)
+}
+
+//   CRLDistributionPoints ::= SEQUENCE SIZE (1..MAX) OF DistributionPoint
+//   DistributionPoint ::= SEQUENCE {
+//     distributionPoint [0] DistributionPointName OPTIONAL,
+//     reasons           [1] ReasonFlags OPTIONAL,
+//     cRLIssuer         [2] GeneralNames OPTIONAL }
+pub struct DistributionPoint<'a> {
+    pub full_name: Vec<GeneralName<'a>>,
+    pub relative_name: Option<&'a [u8]>,
+    pub reasons: Option<usize>,
+    pub crl_issuer: Vec<GeneralName<'a>>,
+}
+
+pub fn distribution_points<'a>(e: &Ext<'a>) -> Result<Vec<DistributionPoint<'a>>> {
+    let tlv = e.only_tlv()?;
+    tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "CRLDistributionPoints")?;
+    let mut r = tlv.reader();
+    let mut out = Vec::new();
+    while !r.is_empty() {
+        let dp = r.read_tlv()?;
+        dp.expect(CLASS_UNIVERSAL, T_SEQUENCE, "a DistributionPoint")?;
+        let mut dr = dp.reader();
+        let mut d = DistributionPoint {
+            full_name: Vec::new(),
+            relative_name: None,
+            reasons: None,
+            crl_issuer: Vec::new(),
+        };
+        while !dr.is_empty() {
+            let x = dr.read_tlv()?;
+            match (x.tag.class, x.tag.number) {
+                (crate::der::CLASS_CONTEXT, 0) => {
+                    // DistributionPointName is itself a CHOICE with two
+                    // context tags, inside the [0] wrapper.
+                    let mut nr = x.reader();
+                    let inner = nr.read_tlv()?;
+                    nr.expect_empty("a DistributionPointName")?;
+                    match inner.tag.number {
+                        0 => {
+                            let mut gr = inner.reader();
+                            while !gr.is_empty() {
+                                d.full_name.push(GeneralName::parse(&gr.read_tlv()?)?);
+                            }
+                        }
+                        1 => d.relative_name = Some(inner.value),
+                        n => {
+                            return err(
+                                inner.start,
+                                format!("DistributionPointName [{}] does not exist", n),
+                            )
+                        }
+                    }
+                }
+                (crate::der::CLASS_CONTEXT, 1) => {
+                    // ReasonFlags, an implicitly tagged BIT STRING.
+                    if x.value.is_empty() {
+                        return err(x.start, "empty ReasonFlags");
+                    }
+                    d.reasons = Some((x.value.len() - 1) * 8 - usize::from(x.value[0]));
+                }
+                (crate::der::CLASS_CONTEXT, 2) => {
+                    let mut gr = x.reader();
+                    while !gr.is_empty() {
+                        d.crl_issuer.push(GeneralName::parse(&gr.read_tlv()?)?);
+                    }
+                }
+                _ => {
+                    return err(
+                        x.start,
+                        format!("unexpected {} in a DistributionPoint", x.tag.name()),
+                    )
+                }
+            }
+        }
+        out.push(d);
+    }
+    if out.is_empty() {
+        return err(tlv.start, "an empty CRLDistributionPoints");
+    }
+    Ok(out)
+}
+
+//   certificatePolicies ::= SEQUENCE SIZE (1..MAX) OF PolicyInformation
+//   PolicyInformation ::= SEQUENCE { policyIdentifier CertPolicyId,
+//                                    policyQualifiers SEQUENCE OF
+//                                        PolicyQualifierInfo OPTIONAL }
+pub struct PolicyInfo {
+    pub id: Oid,
+    pub qualifiers: Vec<(Oid, String)>,
+}
+
+pub fn policies(e: &Ext) -> Result<Vec<PolicyInfo>> {
+    let tlv = e.only_tlv()?;
+    tlv.expect(CLASS_UNIVERSAL, T_SEQUENCE, "certificatePolicies")?;
+    let mut r = tlv.reader();
+    let mut out = Vec::new();
+    while !r.is_empty() {
+        let pi = r.read_tlv()?;
+        pi.expect(CLASS_UNIVERSAL, T_SEQUENCE, "a PolicyInformation")?;
+        let mut pr = pi.reader();
+        let id = pr.read_tlv()?.oid()?;
+        let mut qualifiers = Vec::new();
+        if !pr.is_empty() {
+            let qs = pr.read_tlv()?;
+            qs.expect(CLASS_UNIVERSAL, T_SEQUENCE, "policyQualifiers")?;
+            let mut qr = qs.reader();
+            while !qr.is_empty() {
+                let q = qr.read_tlv()?;
+                q.expect(CLASS_UNIVERSAL, T_SEQUENCE, "a PolicyQualifierInfo")?;
+                let mut ir = q.reader();
+                let qid = ir.read_tlv()?.oid()?;
+                let v = ir.read_tlv()?;
+                let text = if qid.dotted() == crate::oid::CPS_URI {
+                    v.string_text().unwrap_or_default()
+                } else {
+                    format!("<{} octets>", v.value.len())
+                };
+                qualifiers.push((qid, text));
+            }
+        }
+        pr.expect_empty("a PolicyInformation")?;
+        out.push(PolicyInfo { id, qualifiers });
+    }
+    if out.is_empty() {
+        return err(tlv.start, "an empty certificatePolicies");
+    }
+    Ok(out)
+}

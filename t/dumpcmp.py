@@ -182,7 +182,14 @@ def canonical_ours(d):
         out["key_usage"] = tuple(x for x in one("key_usage").split(",") if x)
     if one("ext_key_usage") is not None:
         out["eku"] = tuple(x for x in one("ext_key_usage").split(",") if x)
-    for key, dest in (("san", "san"), ("ian", "ian"),
+    for key in ("subject_key_id", "authority_key_id"):
+        if one(key):
+            out[key] = one(key)
+    if one("authority_cert_serial"):
+        out["authority_cert_serial"] = int(one("authority_cert_serial"), 16)
+    for key, dest in (("san", "san"), ("ian", "ian"), ("aia", "aia"),
+                      ("crldp", "crldp"), ("policy", "policies"),
+                      ("authority_cert_issuer", "authority_cert_issuer"),
                       ("name_constraint_permitted", "nc_permitted"),
                       ("name_constraint_excluded", "nc_excluded")):
         if key in d:
@@ -275,6 +282,48 @@ def from_cryptography(path):
         except x509.ExtensionNotFound:
             continue
         out[dest] = tuple(general_name_text(g) for g in names)
+    try:
+        v = c.extensions.get_extension_for_class(
+            x509.SubjectKeyIdentifier).value
+        out["subject_key_id"] = v.digest.hex()
+    except x509.ExtensionNotFound:
+        pass
+    try:
+        v = c.extensions.get_extension_for_class(
+            x509.AuthorityKeyIdentifier).value
+        if v.key_identifier is not None:
+            out["authority_key_id"] = v.key_identifier.hex()
+        if v.authority_cert_serial_number is not None:
+            out["authority_cert_serial"] = v.authority_cert_serial_number
+        if v.authority_cert_issuer is not None:
+            out["authority_cert_issuer"] = tuple(
+                general_name_text(g) for g in v.authority_cert_issuer)
+    except x509.ExtensionNotFound:
+        pass
+    try:
+        v = c.extensions.get_extension_for_class(
+            x509.AuthorityInformationAccess).value
+        out["aia"] = tuple(
+            "%s %s" % (a.access_method.dotted_string,
+                       general_name_text(a.access_location)) for a in v)
+    except x509.ExtensionNotFound:
+        pass
+    try:
+        v = c.extensions.get_extension_for_class(
+            x509.CRLDistributionPoints).value
+        names = []
+        for dp in v:
+            for g in (dp.full_name or []):
+                names.append(general_name_text(g))
+        out["crldp"] = tuple(names)
+    except x509.ExtensionNotFound:
+        pass
+    try:
+        v = c.extensions.get_extension_for_class(
+            x509.CertificatePolicies).value
+        out["policies"] = tuple(p.policy_identifier.dotted_string for p in v)
+    except x509.ExtensionNotFound:
+        pass
     try:
         nc = c.extensions.get_extension_for_class(x509.NameConstraints).value
         for attr, dest in (("permitted_subtrees", "nc_permitted"),
@@ -385,6 +434,15 @@ def from_openssl(path, dropped=[0]):
                     out[k] = tuple(v)
         else:
             dropped[0] += 1
+    m = re.search(r"X509v3 Subject Key Identifier: ?\n\s+([0-9A-F:]+)", text)
+    if m:
+        out["subject_key_id"] = m.group(1).replace(":", "").lower()
+    m = re.search(r"X509v3 Authority Key Identifier: ?\n\s+(?:keyid:)?([0-9A-F:]+)\n", text)
+    if m:
+        out["authority_key_id"] = m.group(1).replace(":", "").lower()
+    m = re.search(r"\n\s+serial:([0-9A-F:]+)", text)
+    if m:
+        out["authority_cert_serial"] = int(m.group(1).replace(":", ""), 16)
     exts = []
     inblock = False
     for line in text.splitlines():
@@ -437,7 +495,15 @@ def from_openssl(path, dropped=[0]):
 # that certificate, and the drops are counted.
 def openssl_gn(s):
     if s.startswith("IP Address:"):
-        return "IP:" + s[len("IP Address:"):]
+        v = s[len("IP Address:"):]
+        if "/" not in v:
+            # openssl writes IPv6 uncompressed and in upper case; both
+            # printers mean the same address.
+            try:
+                v = str(ipaddress.ip_address(v))
+            except ValueError:
+                return None
+        return "IP:" + v
     if s.startswith("Registered ID:"):
         return "RID:" + s[len("Registered ID:"):]
     for p in ("DNS:", "email:", "URI:", "IP:"):
@@ -523,6 +589,23 @@ def from_certtool(path):
     m = re.search(r"Key Purpose \((?:critical|not critical)\):\n((?:\t{3}[^\t].*\n)+)", text)
     if m:
         out["eku_gnutls_names"] = tuple(l.strip() for l in m.group(1).splitlines())
+    m = re.search(r"Subject Key Identifier \((?:critical|not critical)\):\n\t+([0-9a-f]+)", text)
+    if m:
+        out["subject_key_id"] = m.group(1)
+    m = re.search(r"Authority Key Identifier \((?:critical|not critical)\):\n"
+                  r"((?:\t{3,}[^\t].*\n)+)", text)
+    if m:
+        # GnuTLS prints the issuer name and serial first where they are
+        # present and the key identifier last, with no label on it.
+        for line in m.group(1).splitlines():
+            t = line.strip()
+            if re.fullmatch(r"[0-9a-f]+", t):
+                out["authority_key_id"] = t
+            elif t.startswith("serial: "):
+                out["authority_cert_serial"] = int(t.split(": ", 1)[1], 16)
+            elif t.startswith("directoryName: "):
+                out["authority_cert_issuer"] = (
+                    "DirName:" + t.split(": ", 1)[1],)
     GN = {"DNSname": "DNS", "RFC822Name": "email", "URI": "URI",
           "IPAddress": "IP"}
     m = re.search(r"Name Constraints \((?:critical|not critical)\):\n"
