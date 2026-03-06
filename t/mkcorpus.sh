@@ -169,6 +169,56 @@ req "/C=GB/O=certlint/CN=host.bad.example.org" rsa:2048 leaf-nc-bad
 sign leaf-nc-bad root-nc ncbad.ext 90
 
 rm -f nc.ext ncleaf.ext ncbad.ext
+
+# Awkward serial numbers. openssl refuses to encode an illegal string and
+# will happily encode any of these, so they come from the generator rather
+# than from a hand-written byte.
+req "/C=GB/O=certlint/CN=negative serial" rsa:2048 serial-negative
+sign serial-negative inter-rsa leaf.ext 90 -3
+req "/C=GB/O=certlint/CN=zero serial" rsa:2048 serial-zero
+sign serial-zero inter-rsa leaf.ext 90 0
+req "/C=GB/O=certlint/CN=oversized serial" rsa:2048 serial-long
+sign serial-long inter-rsa leaf.ext 90 \
+    0x00ffeeddccbbaa998877665544332211009988776655
+
+# The 2050 boundary, from both sides, and a notBefore in the 1990s so the
+# two-digit year rule is exercised in the direction that means 19xx.
+req "/C=GB/O=certlint/CN=utc 2049" rsa:2048 time-utc2049
+openssl x509 -req -in time-utc2049.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
+    -set_serial "$(bigserial)" -sha256 -extfile leaf.ext -extensions v3 \
+    -not_before 19950101000000Z -not_after 20491231235959Z \
+    -out time-utc2049.pem >/dev/null 2>&1
+req "/C=GB/O=certlint/CN=generalized 2050" rsa:2048 time-gen2050
+openssl x509 -req -in time-gen2050.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
+    -set_serial "$(bigserial)" -sha256 -extfile leaf.ext -extensions v3 \
+    -not_before 20490101000000Z -not_after 20500101000000Z \
+    -out time-gen2050.pem >/dev/null 2>&1
+
+# A critical extension nobody knows, which RFC 5280 6.1.4 says must make a
+# validator refuse the path, and an empty subject with a critical SAN,
+# which is how a certificate with no DN at all is meant to be written.
+cat > odd.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+subjectAltName = DNS:odd.example.com
+1.2.3.4.5.6.7.8 = critical,DER:04:03:01:02:03
+X
+req "/C=GB/O=certlint/CN=unknown critical" rsa:2048 ext-unknown-critical
+sign ext-unknown-critical inter-rsa odd.ext 90
+
+cat > empty.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+subjectAltName = critical,DNS:anonymous.example.com
+X
+openssl req -new -newkey rsa:2048 -nodes -keyout subject-empty.key \
+    -out subject-empty.csr -subj "/" >/dev/null 2>&1
+sign subject-empty inter-rsa empty.ext 90
+rm -f odd.ext empty.ext
 rm -f ca.ext sub.ext leaf.ext leafec.ext p256.pem p384.pem *.csr
 n=$(ls *.pem | wc -l)
 echo "corpus: $n certificates in $OUT"

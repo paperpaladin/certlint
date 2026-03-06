@@ -155,6 +155,13 @@ def canonical_ours(d):
         out["issuer_rfc4514"] = one("issuer_rfc4514")
     if one("subject_rfc4514") is not None:
         out["subject_rfc4514"] = one("subject_rfc4514")
+    # An empty DN prints a count of zero and no attribute lines. Without
+    # this the key would be missing and the comparison would be skipped
+    # rather than made against the oracles' empty lists.
+    for which in ("issuer", "subject"):
+        if one(which + "_attributes") == "0":
+            out[which + "_attrs"] = ()
+            out[which + "_attr_types"] = ()
     for key, dest in (("issuer_attr", "issuer_attrs"),
                       ("subject_attr", "subject_attrs"),
                       ("issuer_attr_type", "issuer_attr_types"),
