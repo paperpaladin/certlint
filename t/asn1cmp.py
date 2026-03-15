@@ -8,6 +8,7 @@ two formats share nothing but the facts.
 Prints one line per input and a summary. Exit status is the number of
 certificates that disagreed, capped at 125.
 """
+import os
 import re
 import subprocess
 import sys
@@ -103,8 +104,10 @@ def parse(text, rx):
 def main(argv):
     binary, files = argv[1], argv[2:]
     bad = 0
+    refused = 0
     tlvs = 0
     compared = [0]
+    value_refusals = {}
     oids = [0]
     skipped = {}
     for f in files:
@@ -114,11 +117,21 @@ def main(argv):
         ours = run_bytes([binary, "--asn1", f])
         theirs = run_bytes(["openssl", "asn1parse", "-in", f])
         if ours.returncode != 0:
+            # A file named refuse-* is one certlint is meant to refuse.
+            # openssl parses two of the three, so these are counted as
+            # refusals and not as agreement.
+            if os.path.basename(f).startswith("refuse-"):
+                refused += 1
+                continue
             print("    %s: certlint exited %d: %s"
                   % (f, ours.returncode, ours.stderr.strip()))
             bad += 1
             continue
+
         if theirs.returncode != 0:
+            if os.path.basename(f).startswith("refuse-"):
+                refused += 1
+                continue
             print("    %s: openssl asn1parse exited %d, nothing to compare"
                   % (f, theirs.returncode))
             bad += 1
@@ -137,6 +150,11 @@ def main(argv):
             if a[i][6] is None and b[i][6] is not None:
                 skipped[a[i][5]] = skipped.get(a[i][5], 0) + 1
                 a[i] = a[i][:6] + (b[i][6],)
+            elif a[i][6] is not None and a[i][6].startswith("<"):
+                # certlint printed why it would not decode the value where
+                # openssl printed one. A refusal, counted on its own.
+                value_refusals[a[i][5]] = value_refusals.get(a[i][5], 0) + 1
+                a[i] = a[i][:6] + (b[i][6],)
             elif a[i][6] is not None and b[i][6] is not None:
                 if a[i][5] == "OBJECT":
                     a[i] = a[i][:6] + (openssl_renders_oid_as(a[i][6]),)
@@ -154,9 +172,14 @@ def main(argv):
                     print("        openssl:%r" % (y,))
                     break
         tlvs += len(b)
-    print("    %d TLVs over %d files, %d files disagreed" % (tlvs, len(files), bad))
+    print("    %d TLVs over %d files, %d files disagreed, %d refused as"
+          " expected" % (tlvs, len(files) - refused, bad, refused))
     print("    %d of them OBJECT values, each resolved by asking openssl what"
           " it renders that dotted OID as" % oids[0])
+    if value_refusals:
+        print("    %s"
+              % ", ".join("%d %s values openssl printed and certlint refused"
+                          % (n, t) for t, n in sorted(value_refusals.items())))
     print("    %d printed values compared; %s"
           % (compared[0],
              ", ".join("%d %s not decoded by us" % (n, t)

@@ -220,5 +220,9 @@ openssl req -new -newkey rsa:2048 -nodes -keyout subject-empty.key \
 sign subject-empty inter-rsa empty.ext 90
 rm -f odd.ext empty.ext
 rm -f ca.ext sub.ext leaf.ext leafec.ext p256.pem p384.pem *.csr
+# The encodings openssl will not emit, built byte by byte and signed with
+# openssl so that they are real certificates.
+python3 "$HERE/mkodd.py"
+
 n=$(ls *.pem | wc -l)
 echo "corpus: $n certificates in $OUT"

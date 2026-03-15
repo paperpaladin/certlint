@@ -139,22 +139,22 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
 // type whose value is not printed here is a type the comparison against
 // asn1parse cannot check the value of, and the comparator counts those
 // separately so the gap stays visible.
-fn asn1_value(tlv: &der::Tlv) -> String {
+fn asn1_value(tlv: &der::Tlv) -> Vec<u8> {
     if tlv.tag.class != der::CLASS_UNIVERSAL || tlv.tag.constructed {
-        return String::new();
+        return Vec::new();
     }
     match tlv.tag.number {
         der::T_INTEGER => match tlv.integer_hex() {
-            Ok(h) => format!(" :{}", h),
-            Err(e) => format!(" :<{}>", e.msg),
+            Ok(h) => format!(" :{}", h).into_bytes(),
+            Err(e) => format!(" :<{}>", e.msg).into_bytes(),
         },
         der::T_BOOLEAN => match tlv.boolean() {
-            Ok(b) => format!(" :{}", if b { 255 } else { 0 }),
-            Err(e) => format!(" :<{}>", e.msg),
+            Ok(b) => format!(" :{}", if b { 255 } else { 0 }).into_bytes(),
+            Err(e) => format!(" :<{}>", e.msg).into_bytes(),
         },
         der::T_OID => match tlv.oid() {
-            Ok(o) => format!(" :{}", o.dotted()),
-            Err(e) => format!(" :<{}>", e.msg),
+            Ok(o) => format!(" :{}", o.dotted()).into_bytes(),
+            Err(e) => format!(" :<{}>", e.msg).into_bytes(),
         },
         // The narrow string types and the two times print as the bytes
         // they were encoded as, which is what asn1parse prints. BMPString
@@ -170,31 +170,33 @@ fn asn1_value(tlv: &der::Tlv) -> String {
             } else {
                 tlv.string_bytes()
             };
+            // The octets as they were encoded, not transcoded. asn1parse
+            // writes the bytes straight out and a T61String holds bytes
+            // that are not UTF-8, so anything else here would be comparing
+            // our idea of the character set against openssl's.
             match bytes {
                 Ok(b) => {
-                    let mut s = String::from(" :");
-                    for c in b {
-                        s.push(char::from(*c));
-                    }
-                    s
+                    let mut v = b" :".to_vec();
+                    v.extend_from_slice(b);
+                    v
                 }
-                Err(e) => format!(" :<{}>", e.msg),
+                Err(e) => format!(" :<{}>", e.msg).into_bytes(),
             }
         }
         // The wide types print nothing when they are well formed, and the
         // reason when they are not, so a malformed one is still visible.
         der::T_BMP_STRING | der::T_UNIVERSAL_STRING => match tlv.string_text() {
-            Ok(_) => String::new(),
-            Err(e) => format!(" :<{}>", e.msg),
+            Ok(_) => Vec::new(),
+            Err(e) => format!(" :<{}>", e.msg).into_bytes(),
         },
         der::T_OCTET_STRING => {
             let mut s = String::from(" :");
             for b in tlv.value {
                 s.push_str(&format!("{:02X}", b));
             }
-            s
+            s.into_bytes()
         }
-        _ => String::new(),
+        _ => Vec::new(),
     }
 }
 
@@ -211,16 +213,19 @@ fn print_asn1(der: &[u8]) -> der::Result<usize> {
         }
         let tlv = r.read_tlv()?;
         count += 1;
-        println!(
-            "{:6} d={} hl={} l={} {} {}{}",
+        let mut line = format!(
+            "{:6} d={} hl={} l={} {} {}",
             tlv.start,
             depth,
             tlv.hlen,
             tlv.value.len(),
             if tlv.tag.constructed { "cons" } else { "prim" },
-            tlv.tag.name(),
-            asn1_value(&tlv)
-        );
+            tlv.tag.name()
+        )
+        .into_bytes();
+        line.extend_from_slice(&asn1_value(&tlv));
+        line.push(b'\n');
+        let _ = std::io::stdout().write_all(&line);
         stack.push((r, depth));
         if tlv.tag.constructed {
             stack.push((tlv.reader(), depth + 1));
@@ -230,6 +235,7 @@ fn print_asn1(der: &[u8]) -> der::Result<usize> {
 }
 
 fn run(a: &Args) -> Result<u8, String> {
+    let mut worst = EXIT_OK;
     for f in &a.files {
         let bytes = read_file(f)?;
         let certs = pem::certificates(&bytes).map_err(|e| format!("{}: {}", f, e))?;
@@ -252,7 +258,16 @@ fn run(a: &Args) -> Result<u8, String> {
             }
             Some(Mode::Dump) => {
                 let parsed = cert::Cert::parse(&certs[0]).map_err(|e| format!("{}: {}", f, e))?;
-                dump::dump(&parsed).print();
+                let d = dump::dump(&parsed);
+                d.print();
+                if d.errors() > 0 {
+                    eprintln!(
+                        "certlint: {}: {} field(s) did not decode",
+                        f,
+                        d.errors()
+                    );
+                    worst = EXIT_MALFORMED;
+                }
             }
             _ => {
                 for (i, c) in certs.iter().enumerate() {
@@ -262,7 +277,7 @@ fn run(a: &Args) -> Result<u8, String> {
         }
     }
     let _ = (&a.cas, &a.untrusted, &a.at, &a.purpose, a.max_paths);
-    Ok(EXIT_OK)
+    Ok(worst)
 }
 
 fn main() -> ExitCode {

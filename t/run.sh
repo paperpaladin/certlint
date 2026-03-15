@@ -58,7 +58,8 @@ echo "    gnutls:      certtool $(certtool --version 2>/dev/null | head -1 | awk
 echo "    cryptography: $(python3 -c 'import cryptography;print(cryptography.__version__)')"
 
 C=$ROOT/t/corpus
-if [ ! -f "$C/.stamp" ] || [ "$HERE/mkcorpus.sh" -nt "$C/.stamp" ]; then
+if [ ! -f "$C/.stamp" ] || [ "$HERE/mkcorpus.sh" -nt "$C/.stamp" ] \
+   || [ "$HERE/mkodd.py" -nt "$C/.stamp" ]; then
     note "generating the corpus (openssl req, openssl x509 -req)"
     sh "$HERE/mkcorpus.sh" || { echo "corpus generation failed" >&2; exit 2; }
     touch "$C/.stamp"
@@ -83,14 +84,19 @@ note "command line"
 note "PEM and base64 against openssl x509 -outform DER"
 n=0
 bad=0
+skipped=0
 for f in "$C"/*.pem; do
+    # The refuse-* files are deliberately malformed. openssl will not write
+    # DER for one of them and certlint refuses two, so there is nothing to
+    # compare byte for byte; they are checked by the refusal section below.
+    case "$(basename "$f")" in refuse-*) skipped=$((skipped+1)); continue;; esac
     openssl x509 -in "$f" -outform DER -out "$W/oracle.der" 2>/dev/null
     "$BIN" --der "$f" > "$W/ours.der" 2>"$W/err" || { bad=$((bad+1)); continue; }
     cmp -s "$W/oracle.der" "$W/ours.der" || { bad=$((bad+1)); echo "    $f differs"; }
     n=$((n+1))
 done
-[ "$bad" -eq 0 ] && [ "$n" -eq "$ncert" ] \
-    && ok "every PEM decodes to the DER openssl writes ($n certificates)" \
+[ "$bad" -eq 0 ] && [ "$((n + skipped))" -eq "$ncert" ] \
+    && ok "every PEM decodes to the DER openssl writes ($n certificates, $skipped deliberately malformed ones left out)" \
     || no "$bad of $ncert PEM files decoded to something else"
 
 # The same file as raw DER, to prove the no-BEGIN path is not the PEM path

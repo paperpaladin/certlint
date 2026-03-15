@@ -19,6 +19,7 @@ failure, and averaging it away would lose the only interesting thing in
 the output.
 """
 import datetime
+import os
 import ipaddress
 import re
 import subprocess
@@ -201,6 +202,9 @@ def canonical_ours(d):
                       ("name_constraint_excluded", "nc_excluded")):
         if key in d:
             out[dest] = tuple(d[key])
+    if one("has_extensions") == "no":
+        out["ext_oids"] = ()
+        out["ext_critical"] = ()
     if "extension" in d:
         out["ext_oids"] = tuple(e.split()[0] for e in d["extension"])
         out["ext_critical"] = tuple(
@@ -231,6 +235,14 @@ def general_name_text(g):
 
 
 def from_cryptography(path):
+    """cryptography's view, or {"__refused__": reason}."""
+    try:
+        return _from_cryptography(path)
+    except Exception as e:
+        return {"__refused__": "%s: %s" % (type(e).__name__, e)}
+
+
+def _from_cryptography(path):
     data = open(path, "rb").read()
     c = x509.load_pem_x509_certificate(data) if b"-----BEGIN" in data \
         else x509.load_der_x509_certificate(data)
@@ -369,9 +381,10 @@ def openssl_date(text):
 
 def from_openssl(path, dropped=[0]):
     out = {}
-    rc, text, _ = run(["openssl", "x509", "-in", path, "-noout", "-text"])
+    rc, text, errtext = run(["openssl", "x509", "-in", path, "-noout", "-text"])
     if rc != 0:
-        return out
+        return {"__refused__": errtext.strip().splitlines()[-1:] and
+                errtext.strip().splitlines()[-1] or "exit %d" % rc}
     m = re.search(r"Version: (\d+) \(0x", text)
     if m:
         out["version"] = int(m.group(1))
@@ -492,7 +505,7 @@ def from_openssl(path, dropped=[0]):
         rc, s, _ = run(["openssl", "x509", "-in", path, "-noout", opt,
                         "-nameopt", "RFC2253"])
         if rc == 0 and "=" in s:
-            out[key + "_rfc4514"] = s.split("=", 1)[1].strip()
+            out[key + "_rfc4514"] = unescape_rfc2253(s.split("=", 1)[1].strip())
     return out
 
 
@@ -500,6 +513,26 @@ def from_openssl(path, dropped=[0]):
 # writes a DirName in a slash-separated form that is not RFC 4514 at all.
 # A name it writes in a form this cannot convert drops the whole list for
 # that certificate, and the drops are counted.
+def unescape_rfc2253(s):
+    """Turn openssl's \XX escapes back into the characters they encode.
+
+    openssl escapes every byte above ASCII, so a DN holding one arrives as
+    a run of hex escapes that is the UTF-8 of the text. The escapes RFC
+    4514 requires for punctuation are left alone.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 2 < len(s) + 1 and \
+                re.match(r"[0-9A-Fa-f]{2}", s[i + 1:i + 3] or ""):
+            out += bytes([int(s[i + 1:i + 3], 16)])
+            i += 3
+        else:
+            out += s[i].encode()
+            i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def openssl_gn(s):
     if s.startswith("IP Address:"):
         v = s[len("IP Address:"):]
@@ -523,8 +556,12 @@ def openssl_name_lines(text, want_type=False):
     out = []
     for line in text.splitlines():
         line = line.strip()
-        m = re.match(r"^([0-9.]+)=([A-Z0-9]+):(.*)$", line)
-        if m:
+        # A multi-valued RDN arrives as one line with the attributes
+        # joined by " + ".
+        for piece in re.split(r" \+ (?=[0-9.]+=[A-Z0-9]+:)", line):
+            m = re.match(r"^([0-9.]+)=([A-Z0-9]+):(.*)$", piece)
+            if not m:
+                continue
             if want_type:
                 out.append(("%s %s" % (m.group(1), m.group(2))).upper())
             else:
@@ -551,9 +588,11 @@ def gnutls_date(text):
 
 def from_certtool(path):
     out = {}
-    rc, text, _ = run(["certtool", "--certificate-info", "--infile", path])
+    rc, text, errtext = run(["certtool", "--certificate-info", "--infile",
+                             path])
     if rc != 0:
-        return out
+        return {"__refused__": errtext.strip().splitlines()[-1:] and
+                errtext.strip().splitlines()[-1] or "exit %d" % rc}
     m = re.search(r"^\s*Version: (\d+)", text, re.M)
     if m:
         out["version"] = int(m.group(1))
@@ -709,8 +748,16 @@ def main(argv):
     binary, files = argv[1], argv[2:]
     totals = {"cryptography": [0, 0], "openssl": [0, 0], "certtool": [0, 0]}
     refusals = 0
-    dn_skipped = [0]
+    expected_refusals = 0
+    unexpected_refusals = 0
+    not_refused = 0
+    dn_reasons = {}
+    class Counter(dict):
+        def __missing__(self, k):
+            return 0
+    dn_reasons = Counter()
     gn_dropped = [0]
+    oracle_refusals = []
     # What the corpus actually reaches. A comparison of a construct the
     # corpus does not hold passes without running anything, so the reached
     # set is printed next to the agreement counts.
@@ -720,10 +767,29 @@ def main(argv):
     oracle_conflicts = 0
     skipped = {}
     for path in files:
+        expect_refusal = os.path.basename(path).startswith("refuse-")
         mine, why = ours(binary, path)
+        oracle_says = {}
+        for n, f in (("cryptography", from_cryptography),
+                     ("openssl", lambda p: from_openssl(p, gn_dropped)),
+                     ("certtool", from_certtool)):
+            oracle_says[n] = "refuses" if "__refused__" in f(path) \
+                else "accepts"
         if mine is None:
-            print("    REFUSED %s: %s" % (path, why))
             refusals += 1
+            if expect_refusal:
+                expected_refusals += 1
+                print("    refused as expected: %s (%s)"
+                      % (os.path.basename(path),
+                         ", ".join("%s %s" % (n, v)
+                                   for n, v in sorted(oracle_says.items()))))
+            else:
+                print("    REFUSED %s: %s" % (path, why))
+                unexpected_refusals += 1
+            continue
+        if expect_refusal:
+            print("    NOT REFUSED %s: certlint accepted it" % path)
+            not_refused += 1
             continue
         mine = derived(canonical_ours(mine))
         reached["key usage bit"] |= set(mine.get("key_usage", ()))
@@ -739,6 +805,11 @@ def main(argv):
             "openssl": from_openssl(path, gn_dropped),
             "certtool": from_certtool(path),
         }
+        for n in list(oracles):
+            if "__refused__" in oracles[n]:
+                oracle_refusals.append(
+                    (os.path.basename(path), n, oracles[n]["__refused__"]))
+                oracles[n] = {}
         # The DN string is only comparable when every attribute type in it
         # is one RFC 4514 names. Drop it from every side otherwise, and
         # count what was dropped.
@@ -746,9 +817,24 @@ def main(argv):
             key = which + "_rfc4514"
             types = {a.split()[0] for a in mine.get(which + "_attrs", ())}
             if not types <= RFC4514_NAMED:
-                dn_skipped[0] += 1
+                dn_reasons["an attribute type RFC 4514 does not name"] += 1
                 mine.pop(key, None)
                 for f in oracles.values():
+                    f.pop(key, None)
+                continue
+            if "+" in mine.get(key, ""):
+                # openssl sorts the attributes inside a multi-valued RDN
+                # and GnuTLS prints them in encoded order, so the two
+                # oracles write the same name two ways.
+                dn_reasons["a multi-valued RDN, which openssl sorts"] += 1
+                mine.pop(key, None)
+                for f in oracles.values():
+                    f.pop(key, None)
+                continue
+            for n, f in oracles.items():
+                v = f.get(key)
+                if v is not None and ("=#" in v or "=\\#" in v):
+                    dn_reasons["%s writes the value as a hexstring" % n] += 1
                     f.pop(key, None)
         for name, facts in oracles.items():
             for k, v in sorted(facts.items()):
@@ -783,16 +869,22 @@ def main(argv):
         print("    %d alternative-name lists not compared against openssl:"
               " it prints a name type in a form the harness cannot convert"
               % gn_dropped[0])
-    if dn_skipped[0]:
-        print("    %d DN strings not compared: they hold an attribute type"
-              " RFC 4514 does not name" % dn_skipped[0])
+    for why, n in sorted(dn_reasons.items()):
+        print("    %d DN strings not compared: %s" % (n, why))
     for what in sorted(reached):
         got = sorted(x for x in reached[what] if x)
         print("    %s reached by the corpus: %d (%s)"
               % (what, len(got), " ".join(got)))
-    print("    %d certificates, %d refused by certlint, %d oracle-versus-oracle"
-          " disagreements" % (len(files), refusals, oracle_conflicts))
-    return min(bad + refusals, 125)
+    for path, n, why in oracle_refusals:
+        print("    ORACLE REFUSED %s %s: %s" % (n, path, why[:100]))
+    print("    %d certificates, %d oracle-versus-oracle disagreements"
+          % (len(files), oracle_conflicts))
+    print("    %d refusals by certlint: %d expected, %d not"
+          % (refusals, expected_refusals, unexpected_refusals))
+    if not_refused:
+        print("    %d certificates certlint was expected to refuse and did"
+              " not" % not_refused)
+    return min(bad + unexpected_refusals + not_refused, 125)
 
 
 if __name__ == "__main__":

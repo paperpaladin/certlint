@@ -20,6 +20,15 @@ pub struct Dump {
 }
 
 impl Dump {
+    // Every field whose name ends in _error is a part of the certificate
+    // that did not decode. --dump prints what it could and exits 1, rather
+    // than printing a diagnostic among the facts and reporting success.
+    pub fn errors(&self) -> usize {
+        self.lines.iter().filter(|(k, _)| k.ends_with("_error")).count()
+    }
+}
+
+impl Dump {
     fn new() -> Dump {
         Dump { lines: Vec::new() }
     }
