@@ -152,6 +152,13 @@ try_strict "a control character in a VisibleString" '\032\003a\001b'
     && ok "$strict_total malformed strings refused: $strict where openssl parses them anyway, $both where openssl refuses too" \
     || no "$accepted of $strict_total malformed strings were accepted"
 
+note "digests against openssl dgst"
+if python3 "$HERE/hashcmp.py" "$BIN" "$W"; then
+    ok "SHA-1, SHA-256, SHA-384 and SHA-512 agree with openssl"
+else
+    no "a digest disagrees with openssl"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"

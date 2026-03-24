@@ -9,6 +9,7 @@ mod der;
 mod dump;
 mod ext;
 mod gname;
+mod hash;
 mod key;
 mod name;
 mod oid;
@@ -45,6 +46,7 @@ usage: certlint [MODE] [OPTIONS] FILE...
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Asn1,
+    Hash,
     Der,
     Dump,
     Verify,
@@ -108,6 +110,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             // Undocumented on purpose: it prints the OID table for the
             // suite to check against openssl and python cryptography, and
             // it is not a mode anybody would run by hand.
+            // Undocumented, for the suite: print the four digests of the
+            // file so openssl dgst can be asked the same question.
+            "--hash" => a.mode = Some(Mode::Hash),
             "--oid-table" => {
                 for d in oid::all_dotted() {
                     println!("{}", d);
@@ -238,6 +243,18 @@ fn run(a: &Args) -> Result<u8, String> {
     let mut worst = EXIT_OK;
     for f in &a.files {
         let bytes = read_file(f)?;
+        if a.mode == Some(Mode::Hash) {
+            for alg in [hash::Alg::Sha1, hash::Alg::Sha256, hash::Alg::Sha384,
+                        hash::Alg::Sha512] {
+                let d = hash::digest(alg, &bytes);
+                let mut s = String::new();
+                for b in &d {
+                    s.push_str(&format!("{:02x}", b));
+                }
+                println!("{} {}", alg.name(), s);
+            }
+            continue;
+        }
         let certs = pem::certificates(&bytes).map_err(|e| format!("{}: {}", f, e))?;
         match a.mode {
             Some(Mode::Der) => {
