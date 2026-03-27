@@ -4,6 +4,7 @@
 // the bignum, the path builder and the linter are all in this tree, because
 // the point of the exercise is the bytes.
 
+mod bignum;
 mod cert;
 mod der;
 mod dump;
@@ -113,6 +114,38 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             // Undocumented, for the suite: print the four digests of the
             // file so openssl dgst can be asked the same question.
             "--hash" => a.mode = Some(Mode::Hash),
+            // Undocumented, for the suite: base, exponent and modulus in
+            // hex, so python's pow can be asked the same question.
+            "--modexp" => {
+                let b = need("--modexp")?;
+                let e = need("--modexp")?;
+                let m = need("--modexp")?;
+                let hx = |s: &str| -> Vec<u8> {
+                    let s = if s.len() % 2 == 1 {
+                        format!("0{}", s)
+                    } else {
+                        s.to_string()
+                    };
+                    (0..s.len() / 2)
+                        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap_or(0))
+                        .collect()
+                };
+                let mont = match bignum::Mont::new(&bignum::from_be(&hx(&m))) {
+                    Some(x) => x,
+                    None => {
+                        eprintln!("certlint: the modulus must be odd and non-zero");
+                        std::process::exit(1);
+                    }
+                };
+                let r = mont.pow(&bignum::from_be(&hx(&b)), &hx(&e));
+                let bytes = bignum::to_be(&r, mont.k * 4);
+                let mut out = String::new();
+                for byte in bytes.iter().skip_while(|b| **b == 0) {
+                    out.push_str(&format!("{:02x}", byte));
+                }
+                println!("{}", if out.is_empty() { "0".to_string() } else { out });
+                std::process::exit(0);
+            }
             "--oid-table" => {
                 for d in oid::all_dotted() {
                     println!("{}", d);

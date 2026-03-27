@@ -159,6 +159,13 @@ else
     no "a digest disagrees with openssl"
 fi
 
+note "modular exponentiation against python pow"
+if python3 "$HERE/modexpcmp.py" "$BIN"; then
+    ok "every exponentiation agrees with python"
+else
+    no "an exponentiation disagrees with python"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"
