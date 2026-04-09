@@ -166,6 +166,21 @@ else
     no "an exponentiation disagrees with python"
 fi
 
+note "signatures against openssl dgst -verify"
+if python3 "$HERE/sigcmp.py" "$BIN" "$W" "$C"/*.pem; then
+    ok "every signature verdict agrees with openssl"
+else
+    no "a signature verdict disagrees with openssl"
+fi
+
+note "forged PKCS#1 v1.5 blocks"
+if python3 "$HERE/forge.py" "$BIN" "$W" "$C/leaf-rsa.pem" "$C/inter-rsa.pem" \
+        "$C/inter-rsa.key"; then
+    ok "every forged padding block is refused, as openssl refuses it"
+else
+    no "a forged padding block was handled wrongly"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"

@@ -15,6 +15,7 @@ mod key;
 mod name;
 mod oid;
 mod pem;
+mod sig;
 mod time;
 
 use std::io::Write;
@@ -25,6 +26,7 @@ use std::process::ExitCode;
 const EXIT_OK: u8 = 0;
 const EXIT_MALFORMED: u8 = 1;
 const EXIT_USAGE: u8 = 2;
+const EXIT_CHAIN: u8 = 3;
 
 const USAGE: &str = "\
 usage: certlint [MODE] [OPTIONS] FILE...
@@ -47,6 +49,7 @@ usage: certlint [MODE] [OPTIONS] FILE...
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Asn1,
+    Sig,
     Hash,
     Der,
     Dump,
@@ -114,6 +117,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             // Undocumented, for the suite: print the four digests of the
             // file so openssl dgst can be asked the same question.
             "--hash" => a.mode = Some(Mode::Hash),
+            // Undocumented, for the suite: check one certificate's
+            // signature against the key in the first --ca file, or its
+            // own key when there is none.
+            "--sig" => a.mode = Some(Mode::Sig),
             // Undocumented, for the suite: base, exponent and modulus in
             // hex, so python's pow can be asked the same question.
             "--modexp" => {
@@ -304,6 +311,23 @@ fn run(a: &Args) -> Result<u8, String> {
             Some(Mode::Asn1) => {
                 for c in certs.iter() {
                     print_asn1(c).map_err(|e| format!("{}: {}", f, e))?;
+                }
+            }
+            Some(Mode::Sig) => {
+                let parsed = cert::Cert::parse(&certs[0]).map_err(|e| format!("{}: {}", f, e))?;
+                let issuer_bytes = match a.cas.first() {
+                    Some(p) => {
+                        let b = read_file(p)?;
+                        pem::certificates(&b).map_err(|e| format!("{}: {}", p, e))?[0].clone()
+                    }
+                    None => certs[0].clone(),
+                };
+                let issuer = cert::Cert::parse(&issuer_bytes).map_err(|e| e.to_string())?;
+                let spki = key::Spki::parse(issuer.spki_der).map_err(|e| e.to_string())?;
+                let v = sig::verify(&spki, &parsed.sig_alg, parsed.tbs_der, parsed.signature);
+                println!("signature = {}", v.text());
+                if v != sig::Verdict::Valid {
+                    worst = EXIT_CHAIN;
                 }
             }
             Some(Mode::Dump) => {
