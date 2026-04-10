@@ -276,8 +276,18 @@ impl Mont {
         self.from_mont(&acc)
     }
 
-    // The inverse by Fermat, which needs the modulus to be prime. Used
-    // only for the curve parameters, where it is.
+    // The inverse of a value that is already in Montgomery form, as a
+    // value in Montgomery form. Going through the plain form both ways is
+    // the only version of this that is easy to get right: an exponentiation
+    // of a Montgomery-form operand computes something else entirely, and
+    // the result still looks like a field element.
+    pub fn inv_mont(&self, a_mont: &[u32]) -> Limbs {
+        let plain = self.from_mont(a_mont);
+        self.to_mont(&self.inv_prime(&plain))
+    }
+
+    // The inverse by Fermat, which needs the modulus to be prime. The
+    // operand and the result are both in plain form.
     pub fn inv_prime(&self, a: &[u32]) -> Limbs {
         let mut e = to_be(&self.n, self.k * 4);
         // n - 2

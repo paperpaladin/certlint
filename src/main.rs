@@ -8,6 +8,7 @@ mod bignum;
 mod cert;
 mod der;
 mod dump;
+mod ec;
 mod ext;
 mod gname;
 mod hash;
@@ -151,6 +152,22 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     out.push_str(&format!("{:02x}", byte));
                 }
                 println!("{}", if out.is_empty() { "0".to_string() } else { out });
+                std::process::exit(0);
+            }
+            // Undocumented, for the suite: curve parameters and a few
+            // facts the arithmetic must produce.
+            "--ec-check" => {
+                for c in ec::CURVES {
+                    println!("curve {} {} {} bits", c.name, c.oid, c.bits);
+                    for (k, v) in [("p", c.p), ("b", c.b), ("gx", c.gx),
+                                   ("gy", c.gy), ("n", c.n)] {
+                        let h: String = v.chars().filter(|x| x.is_ascii_hexdigit()).collect();
+                        println!("  {} {}", k, h.trim_start_matches('0'));
+                    }
+                    for (k, v) in ec::self_facts(c) {
+                        println!("  {} {}", k, v);
+                    }
+                }
                 std::process::exit(0);
             }
             "--oid-table" => {

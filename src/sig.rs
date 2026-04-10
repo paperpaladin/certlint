@@ -13,6 +13,7 @@
 
 use crate::bignum::{self, Mont};
 use crate::cert::AlgId;
+use crate::ec;
 use crate::hash::{self, Alg};
 use crate::key::{Key, Spki};
 use crate::oid;
@@ -149,6 +150,31 @@ fn rsa_verify(
     }
 }
 
+// An ECDSA signature is a DER SEQUENCE of two INTEGERs, and it is itself
+// attacker-controlled, so it gets the same strictness as the rest: both
+// must be present, both positive, both minimally encoded, and nothing may
+// follow them.
+fn ecdsa_rs(signature: &[u8]) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
+    let tlv = crate::der::Reader::new(signature)
+        .read_only_tlv()
+        .map_err(|e| format!("the signature is not one DER value: {}", e.msg))?;
+    tlv.expect(crate::der::CLASS_UNIVERSAL, crate::der::T_SEQUENCE, "an ECDSA signature")
+        .map_err(|e| e.msg)?;
+    let mut rd = tlv.reader();
+    let r = rd.read_tlv().map_err(|e| e.msg)?;
+    let s = rd.read_tlv().map_err(|e| e.msg)?;
+    rd.expect_empty("an ECDSA signature").map_err(|e| e.msg)?;
+    for v in [&r, &s] {
+        if v.integer_is_negative().map_err(|e| e.msg)? {
+            return Err("a negative value in the ECDSA signature".to_string());
+        }
+    }
+    Ok((
+        r.integer_magnitude().map_err(|e| e.msg)?,
+        s.integer_magnitude().map_err(|e| e.msg)?,
+    ))
+}
+
 pub fn verify(spki: &Spki, alg: &AlgId, message: &[u8], signature: &[u8]) -> Verdict {
     let (digest, is_rsa) = match digest_of(alg) {
         Some(x) => x,
@@ -174,8 +200,38 @@ pub fn verify(spki: &Spki, alg: &AlgId, message: &[u8], signature: &[u8]) -> Ver
             }
             rsa_verify(modulus, exponent, digest, message, signature)
         }
-        (Key::Ec { .. }, false) => {
-            Verdict::Unsupported("ECDSA is not implemented yet".to_string())
+        (Key::Ec { curve, point }, false) => {
+            // The parameters of an ECDSA signature algorithm are absent,
+            // not NULL: RFC 5758 says so explicitly, and openssl emits it
+            // that way.
+            if alg.params.is_some() {
+                return Verdict::Invalid(
+                    "an ECDSA signature algorithm with parameters".to_string(),
+                );
+            }
+            let c = match ec::curve_by_oid(&curve.dotted()) {
+                Some(c) => c,
+                None => {
+                    return Verdict::Unsupported(format!(
+                        "curve {}",
+                        oid::name_or_dotted(curve)
+                    ))
+                }
+            };
+            let (r, s) = match ecdsa_rs(signature) {
+                Ok(v) => v,
+                Err(e) => return Verdict::Invalid(e),
+            };
+            let d = hash::digest(digest, message);
+            match ec::verify(c, point, &d, &r, &s) {
+                Ok(true) => Verdict::Valid,
+                Ok(false) => Verdict::Invalid("the signature does not verify".to_string()),
+                Err(ec::EcError::UnknownCurve) => {
+                    Verdict::Unsupported(format!("curve {}", c.name))
+                }
+                Err(ec::EcError::BadPoint(w)) => Verdict::Invalid(w),
+                Err(ec::EcError::BadSignature(w)) => Verdict::Invalid(w),
+            }
         }
         (Key::Rsa { .. }, false) | (Key::Ec { .. }, true) => Verdict::Invalid(
             "the signature algorithm does not match the key".to_string(),

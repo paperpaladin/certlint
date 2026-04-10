@@ -836,8 +836,28 @@ def main(argv):
                 if v is not None and ("=#" in v or "=\\#" in v):
                     dn_reasons["%s writes the value as a hexstring" % n] += 1
                     f.pop(key, None)
+        # Where the three oracles disagree with each other about a field,
+        # that field has no single authority for this certificate. It is
+        # reported with every value including ours, and left out of the
+        # agreement counts: scoring certlint against one of two
+        # contradicting answers would be picking a side by accident.
+        contested = set()
+        keys = set()
+        for facts in oracles.values():
+            keys |= set(facts)
+        for k in sorted(keys):
+            vals = {n: f[k] for n, f in oracles.items() if k in f}
+            if len(set(map(repr, vals.values()))) > 1:
+                contested.add(k)
+                oracle_conflicts += 1
+                print("    ORACLES DISAGREE %s %s: %s (certlint %r)"
+                      % (path, k, ", ".join("%s=%r" % (n, v)
+                                            for n, v in sorted(vals.items())),
+                         mine.get(k)))
         for name, facts in oracles.items():
             for k, v in sorted(facts.items()):
+                if k in contested:
+                    continue
                 if k not in mine:
                     skipped[k] = skipped.get(k, 0) + 1
                     continue
@@ -846,17 +866,6 @@ def main(argv):
                     totals[name][1] += 1
                     print("    %s %s: ours %r, %s %r"
                           % (path, k, mine[k], name, v))
-        # Where the oracles disagree with each other, say so.
-        keys = set()
-        for facts in oracles.values():
-            keys |= set(facts)
-        for k in sorted(keys):
-            vals = {n: f[k] for n, f in oracles.items() if k in f}
-            if len(set(map(repr, vals.values()))) > 1:
-                oracle_conflicts += 1
-                print("    ORACLES DISAGREE %s %s: %s"
-                      % (path, k, ", ".join("%s=%r" % (n, v)
-                                            for n, v in sorted(vals.items()))))
     bad = 0
     for name in sorted(totals):
         n, b = totals[name]

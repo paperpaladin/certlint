@@ -93,6 +93,26 @@ sign inter-ec root-ec sub.ext 1825
 req "/C=GB/O=certlint/CN=ec.example.com" ec:p256.pem leaf-ec
 sign leaf-ec inter-ec leafec.ext 90
 
+# P-521 and the other digests. Without these the suite holds curve
+# parameters and digest cases that nothing reaches: the corpus is the
+# thing that decides which code runs.
+openssl ecparam -name secp521r1 -out p521.pem
+selfsign root-ec521 "/C=GB/O=certlint/CN=certlint P-521 Root" ec:p521.pem ca.ext 3650
+req "/C=GB/O=certlint/CN=p521.example.com" ec:p521.pem leaf-ec521
+openssl x509 -req -in leaf-ec521.csr -CA root-ec521.pem -CAkey root-ec521.key \
+    -set_serial "$(bigserial)" -days 90 -sha512 -extfile leafec.ext \
+    -extensions v3 -out leaf-ec521.pem >/dev/null 2>&1
+rm -f p521.pem
+
+req "/C=GB/O=certlint/CN=sha512.example.com" rsa:2048 leaf-sha512
+openssl x509 -req -in leaf-sha512.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
+    -set_serial "$(bigserial)" -days 90 -sha512 -extfile leaf.ext \
+    -extensions v3 -out leaf-sha512.pem >/dev/null 2>&1
+req "/C=GB/O=certlint/CN=sha1.example.com" rsa:2048 leaf-sha1
+openssl x509 -req -in leaf-sha1.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
+    -set_serial "$(bigserial)" -days 90 -sha1 -extfile leaf.ext \
+    -extensions v3 -out leaf-sha1.pem >/dev/null 2>&1
+
 # One certificate carrying as many constructs as openssl will emit at
 # once, so that the decoders for them are not checked against a corpus
 # that holds none: all nine key usage bits, six extended key usages, five

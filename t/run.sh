@@ -166,6 +166,13 @@ else
     no "an exponentiation disagrees with python"
 fi
 
+note "curve parameters against openssl ecparam"
+if python3 "$HERE/curvecmp.py" "$BIN"; then
+    ok "the three curves match openssl, and n*G is infinity on each"
+else
+    no "a curve parameter or a point operation is wrong"
+fi
+
 note "signatures against openssl dgst -verify"
 if python3 "$HERE/sigcmp.py" "$BIN" "$W" "$C"/*.pem; then
     ok "every signature verdict agrees with openssl"
