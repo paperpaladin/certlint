@@ -15,6 +15,7 @@ mod hash;
 mod key;
 mod name;
 mod oid;
+mod path;
 mod pem;
 mod sig;
 mod time;
@@ -296,8 +297,95 @@ fn print_asn1(der: &[u8]) -> der::Result<usize> {
     Ok(count)
 }
 
+// Load every certificate from a list of files, labelled by file and
+// position so a report can name which one it means.
+fn load_all(paths: &[String]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut out = Vec::new();
+    for p in paths {
+        let bytes = read_file(p)?;
+        let certs = pem::certificates(&bytes).map_err(|e| format!("{}: {}", p, e))?;
+        for (i, c) in certs.into_iter().enumerate() {
+            let label = if i == 0 {
+                p.clone()
+            } else {
+                format!("{}#{}", p, i)
+            };
+            out.push((label, c));
+        }
+    }
+    Ok(out)
+}
+
+fn cmd_verify(f: &str, certs: &[Vec<u8>], a: &Args) -> Result<u8, String> {
+    let anchors = load_all(&a.cas)?;
+    let untrusted = load_all(&a.untrusted)?;
+    let at = match &a.at {
+        Some(s) => time::Time::parse_stamp(s).map_err(|e| e)?.epoch,
+        None => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    };
+    // Everything after the first certificate in the subject file is a
+    // candidate intermediate, which is the convention every chain file
+    // follows.
+    let mut owned: Vec<(String, Vec<u8>, path::Source)> = Vec::new();
+    owned.push((f.to_string(), certs[0].clone(), path::Source::Input));
+    for (i, c) in certs.iter().enumerate().skip(1) {
+        owned.push((format!("{}#{}", f, i), c.clone(), path::Source::Untrusted));
+    }
+    for (l, c) in untrusted {
+        owned.push((l, c, path::Source::Untrusted));
+    }
+    for (l, c) in anchors {
+        owned.push((l, c, path::Source::Anchor));
+    }
+    let mut store = path::Store { certs: Vec::new() };
+    for (label, der, source) in &owned {
+        match cert::Cert::parse(der) {
+            Ok(c) => store.certs.push(path::Candidate {
+                cert: c,
+                source: *source,
+                label: label.clone(),
+            }),
+            Err(e) => return Err(format!("{}: {}", label, e)),
+        }
+    }
+    let opt = path::Options {
+        at,
+        purpose: a.purpose.clone(),
+        max_paths: a.max_paths,
+        max_depth: 16,
+    };
+    let built = store.build(0, &opt);
+    println!("at = {}", at);
+    println!("candidates = {}", store.certs.len() - 1);
+    println!("paths_tried = {}", built.paths_tried);
+    if built.ok {
+        println!("path_length = {}", built.path.len());
+        for (i, idx) in built.path.iter().enumerate() {
+            let c = &store.certs[*idx];
+            println!(
+                "path_cert = {} {} {}",
+                i,
+                c.source.name(),
+                c.label
+            );
+        }
+        println!("verdict = ok");
+        Ok(EXIT_OK)
+    } else {
+        for f2 in &built.failures {
+            println!("attempt = depth {} {} {}", f2.depth, f2.at_cert, f2.reason);
+        }
+        println!("verdict = failed");
+        Ok(EXIT_CHAIN)
+    }
+}
+
 fn run(a: &Args) -> Result<u8, String> {
     let mut worst = EXIT_OK;
+    let mut verdict;
     for f in &a.files {
         let bytes = read_file(f)?;
         if a.mode == Some(Mode::Hash) {
@@ -329,6 +417,13 @@ fn run(a: &Args) -> Result<u8, String> {
                 for c in certs.iter() {
                     print_asn1(c).map_err(|e| format!("{}: {}", f, e))?;
                 }
+            }
+            Some(Mode::Verify) => {
+                verdict = cmd_verify(f, &certs, a)?;
+                if verdict != EXIT_OK {
+                    worst = verdict;
+                }
+                continue;
             }
             Some(Mode::Sig) => {
                 let parsed = cert::Cert::parse(&certs[0]).map_err(|e| format!("{}: {}", f, e))?;

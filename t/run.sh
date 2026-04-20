@@ -188,6 +188,13 @@ else
     no "a forged padding block was handled wrongly"
 fi
 
+note "chain decisions against openssl verify"
+if python3 "$HERE/chaincmp.py" "$BIN" "$W" "$C"; then
+    ok "every chain decision agrees with openssl verify"
+else
+    no "a chain decision disagrees with openssl verify"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"
