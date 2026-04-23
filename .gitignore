@@ -1,3 +1,4 @@
 target/
 t/corpus/
 t/scratch/
+__pycache__/
