@@ -214,6 +214,51 @@ openssl x509 -req -in time-gen2050.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
     -not_before 20490101000000Z -not_after 20500101000000Z \
     -out time-gen2050.pem >/dev/null 2>&1
 
+# A cross-signed root. root-cross is self-signed; cross-rsa carries the
+# same subject and the same public key and is signed by the RSA root. A
+# leaf under that key therefore has two valid paths, one of length two
+# and one of length three, and which one a builder finds depends on the
+# order it tries candidates in. This is the shape that a builder taking
+# the first matching issuer gets wrong, so without it in the corpus the
+# backtracking search is never asked a question it could fail.
+selfsign root-cross "/C=GB/O=certlint/CN=certlint Cross Root" rsa:2048 ca.ext 3650
+openssl req -new -key root-cross.key -out cross-rsa.csr \
+    -subj "/C=GB/O=certlint/CN=certlint Cross Root" >/dev/null 2>&1
+openssl x509 -req -in cross-rsa.csr -CA root-rsa.pem -CAkey root-rsa.key \
+    -set_serial "$(bigserial)" -days 1825 -sha256 -extfile sub.ext \
+    -extensions v3 -out cross-rsa.pem >/dev/null 2>&1
+
+cat > crossleaf.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:cross.example.com
+X
+req "/C=GB/O=certlint/CN=cross.example.com" rsa:2048 leaf-cross
+sign leaf-cross root-cross crossleaf.ext 90
+rm -f crossleaf.ext
+
+# A fourth level under a pathlen:0 intermediate. inter-rsa says no CA may
+# appear below it, so the chain leaf-deep -> subca-rsa -> inter-rsa ->
+# root-rsa has one intermediate too many and must be refused. Counting
+# that wrongly is invisible on every three-certificate chain, which is
+# every other chain in this corpus.
+req "/C=GB/O=certlint/CN=certlint RSA Sub-Intermediate" rsa:2048 subca-rsa
+sign subca-rsa inter-rsa sub.ext 1825
+req "/C=GB/O=certlint/CN=deep.example.com" rsa:2048 leaf-deep
+sign leaf-deep subca-rsa leaf.ext 90
+
+# A certificate issued by a leaf. openssl x509 -req signs with any key it
+# is handed and does not ask whether the signer is a CA, so this is a
+# real signature from a certificate whose basicConstraints says CA:FALSE.
+req "/C=GB/O=certlint/CN=under-a-leaf.example.com" rsa:2048 leaf-under-leaf
+openssl x509 -req -in leaf-under-leaf.csr -CA leaf-rsa.pem -CAkey leaf-rsa.key \
+    -set_serial "$(bigserial)" -days 90 -sha256 -extfile leaf.ext \
+    -extensions v3 -out leaf-under-leaf.pem >/dev/null 2>&1
+
 # A critical extension nobody knows, which RFC 5280 6.1.4 says must make a
 # validator refuse the path, and an empty subject with a critical SAN,
 # which is how a certificate with no DN at all is meant to be written.
