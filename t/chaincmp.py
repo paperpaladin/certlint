@@ -52,6 +52,24 @@ def scenarios():
          4000000000, []),
         ("intermediate expired at that instant", "time-utc2049",
          ["root-rsa"], ["inter-rsa"], 820454400, []),
+        ("one level below a pathlen:0 intermediate", "leaf-deep",
+         ["root-rsa"], ["inter-rsa", "subca-rsa"], None, []),
+        ("the same chain with the sub-CA as the anchor", "leaf-deep",
+         ["subca-rsa"], [], None, ["-partial_chain"]),
+        ("issued by a leaf", "leaf-under-leaf", ["root-rsa"],
+         ["inter-rsa", "leaf-rsa"], None, []),
+        # The same certificate against a two-long path. The scenario
+        # above reaches the CA flag and the pathlen rule at once, so
+        # deleting the CA flag check leaves the decision unchanged and
+        # only the reason moves; here nothing else can refuse it.
+        ("issued by a leaf, with that leaf as the anchor", "leaf-under-leaf",
+         ["leaf-rsa"], [], None, ["-partial_chain"]),
+        ("cross-signed, the short path", "leaf-cross", ["root-cross"], [],
+         None, []),
+        ("cross-signed, the long path", "leaf-cross", ["root-rsa"],
+         ["cross-rsa"], None, []),
+        ("cross-signed, both paths available", "leaf-cross",
+         ["root-rsa", "root-cross"], ["cross-rsa"], None, []),
     ]
     return [x for x in s if os.path.exists(p(x[1]))]
 
@@ -103,7 +121,52 @@ def ours(binary, leaf, anchors, untrusted, attime):
     ok = "verdict = ok" in out
     reasons = [l.split(" ", 2)[-1] for l in out.splitlines()
                if l.startswith("attempt = ")]
-    return ok, "; ".join(reasons[:2]), rc
+    plen = 0
+    for l in out.splitlines():
+        if l.startswith("path_length = "):
+            plen = int(l.split("=")[1])
+    return ok, "; ".join(reasons[:2]), rc, plen
+
+
+def counts():
+    """What the corpus actually holds, per construct the scenarios reach.
+
+    A pathlen test over a corpus with no pathLenConstraint passes while
+    checking nothing, and so does a cross-signing test over a corpus
+    where every subject is unique. These are the numbers that say
+    whether the scenarios above can fail.
+    """
+    from cryptography import x509
+    from cryptography.x509.oid import ExtensionOID
+    ca = 0
+    plen = 0
+    refused = 0
+    subjects = {}
+    for f in sorted(os.listdir(C)):
+        if not f.endswith(".pem"):
+            continue
+        try:
+            c = x509.load_pem_x509_certificate(
+                open(os.path.join(C, f), "rb").read())
+            s = c.subject.rfc4514_string()
+            exts = c.extensions
+        except Exception:
+            # The oracle refusing to parse a corpus file is a refusal and
+            # not a zero. Counted and printed, never folded into the
+            # construct counts.
+            refused += 1
+            continue
+        subjects[s] = subjects.get(s, 0) + 1
+        try:
+            bc = exts.get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS).value
+        except x509.ExtensionNotFound:
+            continue
+        if bc.ca:
+            ca += 1
+            if bc.path_length is not None:
+                plen += 1
+    shared = sum(1 for v in subjects.values() if v > 1)
+    return ca, plen, shared, refused
 
 
 def main(argv):
@@ -111,11 +174,14 @@ def main(argv):
     binary, work, C = argv[1], argv[2], argv[3]
     bad = 0
     n = 0
+    lengths = {}
     for name, leaf, anchors, untrusted, attime, extra in scenarios():
         want, why = openssl_verdict(leaf, anchors, untrusted, attime, work,
                                     extra)
-        got, ourwhy, rc = ours(binary, leaf, anchors, untrusted, attime)
+        got, ourwhy, rc, plen = ours(binary, leaf, anchors, untrusted, attime)
         n += 1
+        if got:
+            lengths[name] = plen
         if got != want:
             bad += 1
             print("    %s: certlint %s, openssl %s"
@@ -133,6 +199,24 @@ def main(argv):
         if not got and rc != 3:
             print("    %s: refused but exit status %d, wanted 3" % (name, rc))
             bad += 1
+    ca, plen, shared, refused = counts()
+    print("    the corpus holds %d CA certificates, %d of them with a "
+          "pathLenConstraint, and %d subjects held by more than one "
+          "certificate (%d files cryptography would not parse, counted "
+          "here and nowhere else)" % (ca, plen, shared, refused))
+    if plen == 0 or shared == 0:
+        print("    the pathlen and cross-signing scenarios cannot fail on "
+              "this corpus")
+        bad += 1
+    # The two cross-signed scenarios must find paths of different lengths,
+    # or the second one is the first one again under another name.
+    short = lengths.get("cross-signed, the short path")
+    long_ = lengths.get("cross-signed, the long path")
+    print("    cross-signed leaf: path of %s certificates to the self-signed "
+          "root, %s through the cross certificate" % (short, long_))
+    if short != 2 or long_ != 3:
+        print("    wanted 2 and 3; one of the two paths was not built")
+        bad += 1
     print("    %d chain decisions against openssl verify, %d disagreed"
           % (n, bad))
     return min(bad, 125)

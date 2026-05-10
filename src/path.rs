@@ -15,7 +15,7 @@
 // candidate that fails validation does not end the search.
 
 use crate::cert::Cert;
-use crate::ext::{AuthorityKeyId, Exts};
+use crate::ext::{AuthorityKeyId, BasicConstraints, Exts};
 use crate::key::Spki;
 use crate::oid;
 use crate::sig::{self, Verdict};
@@ -100,18 +100,28 @@ fn score(child: &Cert, cand: &Candidate, at: i64) -> i32 {
     s
 }
 
+fn exts<'a>(c: &Cert<'a>) -> Option<Exts<'a>> {
+    Exts::parse(c.extensions_tlv.as_ref()?).ok()
+}
+
 fn ski(c: &Cert) -> Option<Vec<u8>> {
-    let e = c.extensions_tlv.as_ref()?;
-    let x = Exts::parse(e).ok()?;
+    let x = exts(c)?;
     let ext = x.get(oid::EXT_SUBJECT_KEY_ID)?;
     crate::ext::subject_key_id(ext).ok().map(|v| v.to_vec())
 }
 
 fn aki_keyid(c: &Cert) -> Option<Vec<u8>> {
-    let e = c.extensions_tlv.as_ref()?;
-    let x = Exts::parse(e).ok()?;
+    let x = exts(c)?;
     let ext = x.get(oid::EXT_AUTHORITY_KEY_ID)?;
     AuthorityKeyId::parse(ext).ok()?.key_id.map(|v| v.to_vec())
+}
+
+// None when there is no basicConstraints at all, which for an issuer is
+// its own failure and not a missing value to be defaulted.
+fn basic_constraints(c: &Cert) -> Option<std::result::Result<BasicConstraints, String>> {
+    let x = exts(c)?;
+    let e = x.get(oid::EXT_BASIC_CONSTRAINTS)?;
+    Some(BasicConstraints::parse(e).map_err(|e| e.msg))
 }
 
 impl<'a> Store<'a> {
@@ -243,7 +253,62 @@ impl<'a> Store<'a> {
                 }
             }
         }
-        let _ = is_self_issued;
+        // RFC 5280 6.1.4 (k) and (l). Every certificate that issues
+        // another one in this path has to say it is a CA, and each one's
+        // pathLenConstraint bounds the number of non-self-issued
+        // intermediates below it. The count excludes self-issued
+        // certificates, which is what makes a key rollover certificate
+        // free, and it excludes the leaf, which is not an intermediate.
+        //
+        // The anchor is included. RFC 5280 leaves the anchor's own
+        // constraints to the implementation, and both oracles apply
+        // them: openssl refuses leaf-deep at depth 3 as well as at
+        // depth 2.
+        let mut intermediates: u64 = 0;
+        for (depth, idx) in chain.iter().enumerate().skip(1) {
+            let c = &self.certs[*idx];
+            match basic_constraints(&c.cert) {
+                None => {
+                    return Err(fail(
+                        depth,
+                        &c.label,
+                        "issues a certificate and has no basicConstraints".to_string(),
+                    ))
+                }
+                Some(Err(m)) => {
+                    return Err(fail(
+                        depth,
+                        &c.label,
+                        format!("basicConstraints does not decode: {}", m),
+                    ))
+                }
+                Some(Ok(bc)) => {
+                    if !bc.ca {
+                        return Err(fail(
+                            depth,
+                            &c.label,
+                            "issues a certificate and is not a CA".to_string(),
+                        ));
+                    }
+                    if let Some(n) = bc.path_len {
+                        if intermediates > n {
+                            return Err(fail(
+                                depth,
+                                &c.label,
+                                format!(
+                                    "pathLenConstraint is {} and {} intermediate \
+                                     certificates are below it",
+                                    n, intermediates
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            if !is_self_issued(&c.cert) {
+                intermediates += 1;
+            }
+        }
         Ok(())
     }
 }
