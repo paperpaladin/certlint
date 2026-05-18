@@ -259,6 +259,42 @@ openssl x509 -req -in leaf-under-leaf.csr -CA leaf-rsa.pem -CAkey leaf-rsa.key \
     -set_serial "$(bigserial)" -days 90 -sha256 -extfile leaf.ext \
     -extensions v3 -out leaf-under-leaf.pem >/dev/null 2>&1
 
+# A key rollover certificate, which is the only reason the pathlen count
+# excludes self-issued certificates. roll-rsa has the RSA root's subject
+# and issuer and a new key, and is signed by the old root key; inter2 and
+# leaf-roll hang off the new key. The path is four certificates long and
+# root-rsa says pathlen:1, so it is legal only because roll-rsa does not
+# count. Deleting the exclusion from the count is invisible without it.
+openssl genrsa -out roll-rsa.key 2048 >/dev/null 2>&1
+openssl req -new -key roll-rsa.key -out roll-rsa.csr \
+    -subj "/C=GB/O=certlint/CN=certlint RSA Root" >/dev/null 2>&1
+openssl x509 -req -in roll-rsa.csr -CA root-rsa.pem -CAkey root-rsa.key \
+    -set_serial "$(bigserial)" -days 1825 -sha256 -extfile ca.ext \
+    -extensions v3 -out roll-rsa.pem >/dev/null 2>&1
+req "/C=GB/O=certlint/CN=certlint RSA Intermediate 2" rsa:2048 inter2-rsa
+openssl x509 -req -in inter2-rsa.csr -CA roll-rsa.pem -CAkey roll-rsa.key \
+    -set_serial "$(bigserial)" -days 1825 -sha256 -extfile sub.ext \
+    -extensions v3 -out inter2-rsa.pem >/dev/null 2>&1
+req "/C=GB/O=certlint/CN=rolled.example.com" rsa:2048 leaf-roll
+sign leaf-roll inter2-rsa leaf.ext 90
+
+# An intermediate with no basicConstraints at all. openssl will not emit
+# one from a profile that mentions the extension, so the profile here
+# simply leaves it out. RFC 5280 6.1.4 (k) says a certificate without it
+# may not issue another one, and nothing in the corpus tested that while
+# every CA in it carried the extension.
+cat > nobc.ext <<'X'
+[ v3 ]
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+X
+req "/C=GB/O=certlint/CN=certlint Unconstrained Intermediate" rsa:2048 inter-nobc
+sign inter-nobc root-rsa nobc.ext 1825
+req "/C=GB/O=certlint/CN=nobc.example.com" rsa:2048 leaf-nobc
+sign leaf-nobc inter-nobc leaf.ext 90
+rm -f nobc.ext
+
 # A critical extension nobody knows, which RFC 5280 6.1.4 says must make a
 # validator refuse the path, and an empty subject with a critical SAN,
 # which is how a certificate with no DN at all is meant to be written.

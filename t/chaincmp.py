@@ -64,6 +64,10 @@ def scenarios():
         # only the reason moves; here nothing else can refuse it.
         ("issued by a leaf, with that leaf as the anchor", "leaf-under-leaf",
          ["leaf-rsa"], [], None, ["-partial_chain"]),
+        ("four long, through a key rollover certificate", "leaf-roll",
+         ["root-rsa"], ["inter2-rsa", "roll-rsa"], None, []),
+        ("an intermediate with no basicConstraints", "leaf-nobc",
+         ["root-rsa"], ["inter-nobc"], None, []),
         ("cross-signed, the short path", "leaf-cross", ["root-cross"], [],
          None, []),
         ("cross-signed, the long path", "leaf-cross", ["root-rsa"],
