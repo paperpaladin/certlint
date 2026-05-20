@@ -15,7 +15,7 @@
 // candidate that fails validation does not end the search.
 
 use crate::cert::Cert;
-use crate::ext::{AuthorityKeyId, BasicConstraints, Exts};
+use crate::ext::{AuthorityKeyId, BasicConstraints, ExtKeyUsage, Exts, KeyUsage, KU_KEY_CERT_SIGN};
 use crate::key::Spki;
 use crate::oid;
 use crate::sig::{self, Verdict};
@@ -114,6 +114,34 @@ fn aki_keyid(c: &Cert) -> Option<Vec<u8>> {
     let x = exts(c)?;
     let ext = x.get(oid::EXT_AUTHORITY_KEY_ID)?;
     AuthorityKeyId::parse(ext).ok()?.key_id.map(|v| v.to_vec())
+}
+
+fn key_usage(c: &Cert) -> Option<std::result::Result<KeyUsage, String>> {
+    let x = exts(c)?;
+    let e = x.get(oid::EXT_KEY_USAGE)?;
+    Some(KeyUsage::parse(e).map_err(|e| e.msg))
+}
+
+// The purposes the certificate declares, or None when it declares none,
+// which RFC 5280 reads as no restriction rather than as no purpose.
+fn purposes(c: &Cert) -> Option<Vec<String>> {
+    let x = exts(c)?;
+    let e = x.get(oid::EXT_EXT_KEY_USAGE)?;
+    let eku = ExtKeyUsage::parse(e).ok()?;
+    Some(eku.purposes.iter().map(|p| p.dotted()).collect())
+}
+
+// The names --purpose takes, and the OID each one means.
+pub fn purpose_oid(name: &str) -> Option<&'static str> {
+    match name {
+        "serverAuth" => Some(oid::KP_SERVER_AUTH),
+        "clientAuth" => Some(oid::KP_CLIENT_AUTH),
+        "codeSigning" => Some(oid::KP_CODE_SIGNING),
+        "emailProtection" => Some(oid::KP_EMAIL_PROTECTION),
+        "timeStamping" => Some(oid::KP_TIME_STAMPING),
+        "OCSPSigning" => Some(oid::KP_OCSP_SIGNING),
+        _ => None,
+    }
 }
 
 // None when there is no basicConstraints at all, which for an issuer is
@@ -305,8 +333,58 @@ impl<'a> Store<'a> {
                     }
                 }
             }
+            // RFC 5280 6.1.4 (n). An issuer that says what its key is for
+            // has to say certificate signing is one of them. An issuer
+            // with no keyUsage at all is unrestricted, which is the
+            // reading every implementation takes.
+            match key_usage(&c.cert) {
+                Some(Err(m)) => {
+                    return Err(fail(
+                        depth,
+                        &c.label,
+                        format!("keyUsage does not decode: {}", m),
+                    ))
+                }
+                Some(Ok(ku)) if !ku.has(KU_KEY_CERT_SIGN) => {
+                    return Err(fail(
+                        depth,
+                        &c.label,
+                        "issues a certificate and its keyUsage has no keyCertSign"
+                            .to_string(),
+                    ))
+                }
+                _ => {}
+            }
             if !is_self_issued(&c.cert) {
                 intermediates += 1;
+            }
+        }
+        // The purpose, over every certificate in the path. An EKU on a CA
+        // restricts what that CA may issue, so the check is not only on
+        // the leaf; a certificate with no EKU is unrestricted, and
+        // anyExtendedKeyUsage is the same thing written down.
+        if let Some(name) = &opt.purpose {
+            let want = match purpose_oid(name) {
+                Some(o) => o,
+                None => {
+                    return Err(fail(
+                        0,
+                        &self.certs[chain[0]].label,
+                        format!("{} is not a purpose certlint knows", name),
+                    ))
+                }
+            };
+            for (depth, idx) in chain.iter().enumerate() {
+                let c = &self.certs[*idx];
+                if let Some(ps) = purposes(&c.cert) {
+                    if !ps.iter().any(|p| p == want || p == oid::KP_ANY) {
+                        return Err(fail(
+                            depth,
+                            &c.label,
+                            format!("its extendedKeyUsage does not include {}", name),
+                        ));
+                    }
+                }
             }
         }
         Ok(())

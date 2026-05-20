@@ -68,14 +68,51 @@ def scenarios():
          ["root-rsa"], ["inter2-rsa", "roll-rsa"], None, []),
         ("an intermediate with no basicConstraints", "leaf-nobc",
          ["root-rsa"], ["inter-nobc"], None, []),
+        ("a CA whose keyUsage has no keyCertSign", "leaf-nokcs",
+         ["root-rsa"], ["inter-nokcs"], None, []),
         ("cross-signed, the short path", "leaf-cross", ["root-cross"], [],
          None, []),
         ("cross-signed, the long path", "leaf-cross", ["root-rsa"],
          ["cross-rsa"], None, []),
         ("cross-signed, both paths available", "leaf-cross",
          ["root-rsa", "root-cross"], ["cross-rsa"], None, []),
+        # --purpose. openssl spells the same four purposes differently and
+        # its -purpose also applies the key usage rules that go with each,
+        # so these are the scenarios most likely to produce a real
+        # difference rather than an agreement.
+        ("serverAuth on a server certificate", "leaf-rsa", ["root-rsa"],
+         ["inter-rsa"], None, [], "serverAuth"),
+        ("clientAuth on a certificate that does not offer it", "leaf-ec",
+         ["root-ec"], ["inter-ec"], None, [], "clientAuth"),
+        # A recorded difference, not an agreement. leaf-full carries all
+        # nine key usage bits, and openssl's codesign purpose refuses a
+        # certificate whose keyUsage has anything beyond digitalSignature
+        # and nonRepudiation. certlint's --purpose is an extendedKeyUsage
+        # check and nothing else, so it accepts. Listed here so that the
+        # suite fails if the two ever start agreeing without the record
+        # being updated.
+        ("codeSigning on a certificate that offers six purposes",
+         "leaf-full", ["root-rsa"], ["inter-rsa"], None, [], "codeSigning",
+         "openssl applies its own keyUsage rule for codesign; "
+         "certlint's --purpose reads extendedKeyUsage only"),
+        ("emailProtection on a server certificate", "leaf-rsa",
+         ["root-rsa"], ["inter-rsa"], None, [], "emailProtection"),
+        ("clientAuth under a CA restricted to serverAuth", "leaf-eku",
+         ["root-rsa"], ["inter-eku"], None, [], "clientAuth"),
+        ("serverAuth under the same CA", "leaf-eku", ["root-rsa"],
+         ["inter-eku"], None, [], "serverAuth"),
     ]
+    s = [x + (None,) * (8 - len(x)) for x in s]
     return [x for x in s if os.path.exists(p(x[1]))]
+
+
+# openssl verify names the same purposes differently.
+OSSL_PURPOSE = {
+    "serverAuth": "sslserver",
+    "clientAuth": "sslclient",
+    "codeSigning": "codesign",
+    "emailProtection": "smimesign",
+}
 
 
 def run(cmd):
@@ -85,8 +122,10 @@ def run(cmd):
             r.stderr.decode("utf-8", "surrogateescape"))
 
 
-def openssl_verdict(leaf, anchors, untrusted, attime, work, extra):
+def openssl_verdict(leaf, anchors, untrusted, attime, work, extra, purpose):
     cmd = ["openssl", "verify"] + list(extra)
+    if purpose:
+        cmd += ["-purpose", OSSL_PURPOSE[purpose]]
     ca = os.path.join(work, "anchors.pem")
     with open(ca, "wb") as f:
         for a in anchors:
@@ -111,8 +150,10 @@ def openssl_verdict(leaf, anchors, untrusted, attime, work, extra):
     return rc == 0, reason
 
 
-def ours(binary, leaf, anchors, untrusted, attime):
+def ours(binary, leaf, anchors, untrusted, attime, purpose):
     cmd = [binary, "--verify", p(leaf)]
+    if purpose:
+        cmd += ["--purpose", purpose]
     for a in anchors:
         cmd += ["--ca", p(a)]
     for u in untrusted:
@@ -179,13 +220,27 @@ def main(argv):
     bad = 0
     n = 0
     lengths = {}
-    for name, leaf, anchors, untrusted, attime, extra in scenarios():
+    for (name, leaf, anchors, untrusted, attime, extra, purpose,
+         known) in scenarios():
         want, why = openssl_verdict(leaf, anchors, untrusted, attime, work,
-                                    extra)
-        got, ourwhy, rc, plen = ours(binary, leaf, anchors, untrusted, attime)
+                                    extra, purpose)
+        got, ourwhy, rc, plen = ours(binary, leaf, anchors, untrusted, attime,
+                                     purpose)
         n += 1
         if got:
             lengths[name] = plen
+        if known is not None:
+            # An inverted check: this pair is recorded as differing, so
+            # agreement is the failure. A recorded difference that has
+            # quietly gone away is a record that is now wrong.
+            print("    recorded difference %s: certlint %s, openssl %s"
+                  % (name, "accepts" if got else "refuses",
+                     "accepts" if want else "refuses"))
+            print("        %s" % known)
+            if got == want:
+                print("        they agree now; the record is stale")
+                bad += 1
+            continue
         if got != want:
             bad += 1
             print("    %s: certlint %s, openssl %s"

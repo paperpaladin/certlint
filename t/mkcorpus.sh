@@ -295,6 +295,50 @@ req "/C=GB/O=certlint/CN=nobc.example.com" rsa:2048 leaf-nobc
 sign leaf-nobc inter-nobc leaf.ext 90
 rm -f nobc.ext
 
+# A CA that says it may sign CRLs and not certificates. basicConstraints
+# and keyUsage are two separate claims and an implementation that reads
+# only the first will issue under this one.
+cat > nokcs.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,digitalSignature,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+X
+req "/C=GB/O=certlint/CN=certlint CRL-only Intermediate" rsa:2048 inter-nokcs
+sign inter-nokcs root-rsa nokcs.ext 1825
+req "/C=GB/O=certlint/CN=nokcs.example.com" rsa:2048 leaf-nokcs
+sign leaf-nokcs inter-nokcs leaf.ext 90
+rm -f nokcs.ext
+
+# A CA restricted to serverAuth issuing a clientAuth leaf. An
+# extendedKeyUsage on a CA limits what that CA may issue, so --purpose
+# clientAuth has to look at the whole path and not only at the leaf.
+# openssl verify -purpose sslclient refuses this with error 26 at depth
+# 1, so the rule has an oracle.
+cat > ekuca.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+X
+cat > ekuleaf.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:ekuc.example.com
+X
+req "/C=GB/O=certlint/CN=certlint serverAuth-only Intermediate" rsa:2048 inter-eku
+sign inter-eku root-rsa ekuca.ext 1825
+req "/C=GB/O=certlint/CN=ekuc.example.com" rsa:2048 leaf-eku
+sign leaf-eku inter-eku ekuleaf.ext 90
+rm -f ekuca.ext ekuleaf.ext
+
 # A critical extension nobody knows, which RFC 5280 6.1.4 says must make a
 # validator refuse the path, and an empty subject with a critical SAN,
 # which is how a certificate with no DN at all is meant to be written.
