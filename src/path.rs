@@ -255,6 +255,34 @@ impl<'a> Store<'a> {
                 ));
             }
         }
+        // RFC 5280 6.1.4 (f). A critical extension this code does not
+        // process must end the path. The list is of extensions path
+        // validation here actually acts on, so certificatePolicies is
+        // absent on purpose: it is parsed and printed and the policy tree
+        // of 6.1.3 is a non-goal, which makes a critical one a refusal
+        // rather than something to wave through.
+        const PROCESSED: [&str; 5] = [
+            oid::EXT_BASIC_CONSTRAINTS,
+            oid::EXT_KEY_USAGE,
+            oid::EXT_EXT_KEY_USAGE,
+            oid::EXT_NAME_CONSTRAINTS,
+            oid::EXT_SUBJECT_ALT_NAME,
+        ];
+        for (depth, idx) in chain.iter().enumerate() {
+            let c = &self.certs[*idx];
+            if let Some(x) = exts(&c.cert) {
+                for e in &x.list {
+                    let d = e.oid.dotted();
+                    if e.critical && !PROCESSED.contains(&d.as_str()) {
+                        return Err(fail(
+                            depth,
+                            &c.label,
+                            format!("a critical extension nothing processes: {}", d),
+                        ));
+                    }
+                }
+            }
+        }
         // Each certificate is signed by the one above it.
         for w in chain.windows(2) {
             let (child, issuer) = (&self.certs[w[0]], &self.certs[w[1]]);
