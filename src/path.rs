@@ -15,7 +15,9 @@
 // candidate that fails validation does not end the search.
 
 use crate::cert::Cert;
-use crate::ext::{AuthorityKeyId, BasicConstraints, ExtKeyUsage, Exts, KeyUsage, KU_KEY_CERT_SIGN};
+use crate::ext::{AuthorityKeyId, BasicConstraints, ExtKeyUsage, Exts, KeyUsage};
+use crate::ext::{NameConstraints, KU_KEY_CERT_SIGN};
+use crate::gname::{self, GeneralName};
 use crate::key::Spki;
 use crate::oid;
 use crate::sig::{self, Verdict};
@@ -142,6 +144,157 @@ pub fn purpose_oid(name: &str) -> Option<&'static str> {
         "OCSPSigning" => Some(oid::KP_OCSP_SIGNING),
         _ => None,
     }
+}
+
+fn name_constraints<'a>(c: &Cert<'a>) -> Option<std::result::Result<NameConstraints<'a>, String>> {
+    let x = exts(c)?;
+    let e = x.get(oid::EXT_NAME_CONSTRAINTS)?;
+    Some(NameConstraints::parse(e).map_err(|e| e.msg))
+}
+
+fn san<'a>(c: &Cert<'a>) -> Vec<GeneralName<'a>> {
+    let x = match exts(c) {
+        Some(x) => x,
+        None => return Vec::new(),
+    };
+    let e = match x.get(oid::EXT_SUBJECT_ALT_NAME) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    match e.only_tlv().and_then(|t| gname::parse_general_names(&t)) {
+        Ok(v) => v,
+        Err(_) => Vec::new(),
+    }
+}
+
+// RFC 5280 4.2.1.10 matching, one function per name type.
+//
+// A DNS constraint matches the name itself and anything under it, on a
+// label boundary: example.org covers host.example.org and not
+// notexample.org. A base that begins with a dot is subdomains only, which
+// is what openssl does and is the form openssl itself writes for a URI
+// constraint.
+fn dns_within(name: &str, base: &str) -> bool {
+    if base.is_empty() {
+        return true;
+    }
+    let (n, b) = (name.to_ascii_lowercase(), base.to_ascii_lowercase());
+    if n.len() < b.len() {
+        return false;
+    }
+    if n.len() > b.len() && !b.starts_with('.') && !n[..n.len() - b.len()].ends_with('.') {
+        return false;
+    }
+    n.ends_with(&b)
+}
+
+// A constraint with an at sign is one mailbox. Without one it is a host,
+// and the local part is not looked at.
+fn email_within(name: &str, base: &str) -> bool {
+    let at = match name.rfind('@') {
+        Some(i) => i,
+        None => return false,
+    };
+    let (local, host) = (&name[..at], &name[at + 1..]);
+    match base.rfind('@') {
+        Some(i) => local == &base[..i] && host.eq_ignore_ascii_case(&base[i + 1..]),
+        None => dns_within(host, base),
+    }
+}
+
+fn uri_host(u: &str) -> &str {
+    let s = match u.find("://") {
+        Some(i) => &u[i + 3..],
+        None => u,
+    };
+    let s = match s.find('@') {
+        Some(i) => &s[i + 1..],
+        None => s,
+    };
+    let end = s
+        .find(|c| c == '/' || c == ':' || c == '?' || c == '#')
+        .unwrap_or(s.len());
+    &s[..end]
+}
+
+// The base is an address followed by a mask of the same width, which is
+// why an iPAddress inside NameConstraints is 8 or 32 octets where one in
+// a SubjectAltName is 4 or 16.
+fn ip_within(name: &[u8], base: &[u8]) -> bool {
+    if base.len() != name.len() * 2 {
+        return false;
+    }
+    let (addr, mask) = base.split_at(name.len());
+    name.iter()
+        .zip(addr)
+        .zip(mask)
+        .all(|((x, a), m)| x & m == a & m)
+}
+
+// A directoryName constraint matches a subject whose RDN sequence starts
+// with the constraint's. DER encodes each RDN on its own, so the prefix
+// is a byte prefix of the SEQUENCE contents and nothing has to be
+// compared attribute by attribute.
+fn dn_within(name: &[u8], base: &[u8]) -> bool {
+    let body = |d: &[u8]| -> Option<Vec<u8>> {
+        crate::der::Reader::new(d)
+            .read_only_tlv()
+            .ok()
+            .map(|t| t.value.to_vec())
+    };
+    match (body(name), body(base)) {
+        (Some(n), Some(b)) => b.len() <= n.len() && n[..b.len()] == b[..],
+        _ => false,
+    }
+}
+
+fn ascii(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).to_string()
+}
+
+// None when the two names are of different types, which RFC 5280 says
+// leaves the name unconstrained by that subtree rather than in breach of
+// it.
+fn name_within(name: &GeneralName, base: &GeneralName) -> Option<bool> {
+    use GeneralName::*;
+    match (name, base) {
+        (Dns(n), Dns(b)) => Some(dns_within(&ascii(n), &ascii(b))),
+        (Rfc822(n), Rfc822(b)) => Some(email_within(&ascii(n), &ascii(b))),
+        (Uri(n), Uri(b)) => Some(dns_within(uri_host(&ascii(n)), &ascii(b))),
+        (Ip(n), Ip(b)) => Some(ip_within(n, b)),
+        (Directory(n), Directory(b)) => Some(dn_within(n, b)),
+        _ => None,
+    }
+}
+
+// Every name the certificate offers, checked against one CA's
+// constraints. The subject DN counts as a directoryName, which is how a
+// certificate with no SubjectAltName is constrained at all.
+fn check_names(c: &Cert, nc: &NameConstraints) -> std::result::Result<(), String> {
+    let mut names = san(c);
+    if !c.subject_der.is_empty() {
+        names.push(GeneralName::Directory(c.subject_der));
+    }
+    for n in &names {
+        for st in &nc.excluded {
+            if name_within(n, &st.base) == Some(true) {
+                return Err(format!(
+                    "{} is inside the excluded subtree {}",
+                    n.text(),
+                    st.base.text()
+                ));
+            }
+        }
+        let same: Vec<&crate::ext::Subtree> = nc
+            .permitted
+            .iter()
+            .filter(|st| name_within(n, &st.base).is_some())
+            .collect();
+        if !same.is_empty() && !same.iter().any(|st| name_within(n, &st.base) == Some(true)) {
+            return Err(format!("{} is outside every permitted subtree", n.text()));
+        }
+    }
+    Ok(())
 }
 
 // None when there is no basicConstraints at all, which for an issuer is
@@ -385,6 +538,37 @@ impl<'a> Store<'a> {
             }
             if !is_self_issued(&c.cert) {
                 intermediates += 1;
+            }
+        }
+        // RFC 5280 6.1.4 (g). Name constraints are state carried down the
+        // chain, not a check run once: a CA's constraints bind everything
+        // below it, and two CAs in one path both bind. Keeping the list of
+        // active constraint sets and testing every name against each of
+        // them is the intersection, without having to compute one.
+        //
+        // A self-issued certificate in the middle is skipped, because it
+        // is the same entity under a new key and not a name being
+        // delegated. The final certificate is never skipped.
+        let mut active: Vec<NameConstraints> = Vec::new();
+        for (depth, idx) in chain.iter().enumerate().rev() {
+            let c = &self.certs[*idx];
+            if !active.is_empty() && (depth == 0 || !is_self_issued(&c.cert)) {
+                for nc in &active {
+                    if let Err(why) = check_names(&c.cert, nc) {
+                        return Err(fail(depth, &c.label, why));
+                    }
+                }
+            }
+            match name_constraints(&c.cert) {
+                Some(Ok(nc)) => active.push(nc),
+                Some(Err(m)) => {
+                    return Err(fail(
+                        depth,
+                        &c.label,
+                        format!("nameConstraints does not decode: {}", m),
+                    ))
+                }
+                None => {}
             }
         }
         // The purpose, over every certificate in the path. An EKU on a CA

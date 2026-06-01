@@ -46,6 +46,22 @@ def scenarios():
          ["root-rsa", "root-ec", "root-nc"],
          ["inter-rsa", "inter-ec", "root-ec521"], None, []),
         ("name constrained, inside", "leaf-nc-ok", ["root-nc"], [], None, []),
+        ("a dNSName in an excluded subtree", "leaf-nc-bad", ["root-nc"], [],
+         None, []),
+        ("an iPAddress outside every permitted subtree", "leaf-nc-ip",
+         ["root-nc"], [], None, []),
+        ("an rfc822Name outside every permitted subtree", "leaf-nc-mail",
+         ["root-nc"], [], None, []),
+        ("a uniformResourceIdentifier in an excluded subtree", "leaf-nc-uri",
+         ["root-nc"], [], None, []),
+        ("a dNSName that only ends with the permitted base",
+         "leaf-nc-suffix", ["root-nc"], [], None, []),
+        ("an intermediate in breach, with a leaf that is not",
+         "leaf-nc-sub", ["root-nc"], ["inter-nc"], None, []),
+        ("a subject DN inside the permitted directoryName", "leaf-ncdn-ok",
+         ["root-ncdn"], [], None, []),
+        ("a subject DN outside it", "leaf-ncdn-bad", ["root-ncdn"], [],
+         None, []),
         ("before notBefore", "leaf-rsa", ["root-rsa"], ["inter-rsa"],
          1000000000, []),
         ("after notAfter", "leaf-rsa", ["root-rsa"], ["inter-rsa"],
@@ -191,6 +207,7 @@ def counts():
     plen = 0
     refused = 0
     subjects = {}
+    nctypes = set()
     for f in sorted(os.listdir(C)):
         if not f.endswith(".pem"):
             continue
@@ -207,6 +224,13 @@ def counts():
             continue
         subjects[s] = subjects.get(s, 0) + 1
         try:
+            nc = exts.get_extension_for_oid(ExtensionOID.NAME_CONSTRAINTS).value
+            for st in list(nc.permitted_subtrees or []) + \
+                    list(nc.excluded_subtrees or []):
+                nctypes.add(type(st).__name__)
+        except x509.ExtensionNotFound:
+            pass
+        try:
             bc = exts.get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS).value
         except x509.ExtensionNotFound:
             continue
@@ -215,7 +239,7 @@ def counts():
             if bc.path_length is not None:
                 plen += 1
     shared = sum(1 for v in subjects.values() if v > 1)
-    return ca, plen, shared, refused
+    return ca, plen, shared, refused, sorted(nctypes)
 
 
 def main(argv):
@@ -262,11 +286,17 @@ def main(argv):
         if not got and rc != 3:
             print("    %s: refused but exit status %d, wanted 3" % (name, rc))
             bad += 1
-    ca, plen, shared, refused = counts()
+    ca, plen, shared, refused, nctypes = counts()
     print("    the corpus holds %d CA certificates, %d of them with a "
           "pathLenConstraint, and %d subjects held by more than one "
           "certificate (%d files cryptography would not parse, counted "
           "here and nowhere else)" % (ca, plen, shared, refused))
+    print("    name constraint base types in the corpus: %d (%s)"
+          % (len(nctypes), " ".join(nctypes)))
+    if len(nctypes) < 4:
+        print("    fewer than four constrained name types; the per-type "
+              "matchers are not all reached")
+        bad += 1
     if plen == 0 or shared == 0:
         print("    the pathlen and cross-signing scenarios cannot fail on "
               "this corpus")

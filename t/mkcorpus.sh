@@ -188,6 +188,116 @@ sign leaf-nc-ok root-nc ncleaf.ext 90
 req "/C=GB/O=certlint/CN=host.bad.example.org" rsa:2048 leaf-nc-bad
 sign leaf-nc-bad root-nc ncbad.ext 90
 
+# One leaf per constrained name type, because a name constraints check
+# that only ever sees a dNSName is a dNSName check. root-nc permits
+# DNS:example.org, IP:192.0.2.0/24 and email:example.org, and excludes
+# DNS:bad.example.org and URI:.bad.example.net.
+cat > ncip.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:ip.example.org,IP:198.51.100.9
+X
+cat > ncmail.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = email:person@elsewhere.example.net
+X
+cat > ncuri.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:uri.example.org,URI:https://host.bad.example.net/x
+X
+req "/C=GB/O=certlint/CN=ip.example.org" rsa:2048 leaf-nc-ip
+sign leaf-nc-ip root-nc ncip.ext 90
+req "/C=GB/O=certlint/CN=mail.example.org" rsa:2048 leaf-nc-mail
+sign leaf-nc-mail root-nc ncmail.ext 90
+req "/C=GB/O=certlint/CN=uri.example.org" rsa:2048 leaf-nc-uri
+sign leaf-nc-uri root-nc ncuri.ext 90
+rm -f ncip.ext ncmail.ext ncuri.ext
+
+# A dNSName that ends with the permitted base and does not sit under it.
+# evilexample.org is not inside example.org, and a suffix comparison with
+# no label boundary says it is.
+cat > ncsuffix.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:evilexample.org
+X
+req "/C=GB/O=certlint/CN=evilexample.org" rsa:2048 leaf-nc-suffix
+sign leaf-nc-suffix root-nc ncsuffix.ext 90
+rm -f ncsuffix.ext
+
+# An intermediate that breaches its issuer's constraints while the leaf
+# below it does not. Name constraints are state carried down the chain,
+# and a check that only looks at the leaf cannot see this one.
+cat > ncsub.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:host.bad.example.org
+X
+cat > ncsubleaf.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:fine.example.org
+X
+req "/C=GB/O=certlint/CN=sub.example.org" rsa:2048 inter-nc
+sign inter-nc root-nc ncsub.ext 1825
+req "/C=GB/O=certlint/CN=fine.example.org" rsa:2048 leaf-nc-sub
+sign leaf-nc-sub inter-nc ncsubleaf.ext 90
+rm -f ncsub.ext ncsubleaf.ext
+
+# A directoryName constraint, which is the only one that looks at the
+# subject rather than at the SubjectAltName. Nothing else in the corpus
+# makes the subject DN a name to be checked.
+cat > ncdn.ext <<'X'
+[ req ]
+distinguished_name = dn
+prompt = no
+[ dn ]
+CN = unused
+[ v3 ]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+nameConstraints = critical,permitted;dirName:ncdn_base
+[ ncdn_base ]
+C = GB
+O = certlint
+X
+cat > ncdnleaf.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:dn.example.net
+X
+selfsign root-ncdn "/C=GB/O=certlint/CN=certlint DN Constrained Root" \
+    rsa:2048 ncdn.ext 3650
+req "/C=GB/O=certlint/CN=dn.example.net" rsa:2048 leaf-ncdn-ok
+sign leaf-ncdn-ok root-ncdn ncdnleaf.ext 90
+req "/C=FR/O=somebody else/CN=dn.example.net" rsa:2048 leaf-ncdn-bad
+sign leaf-ncdn-bad root-ncdn ncdnleaf.ext 90
+rm -f ncdn.ext ncdnleaf.ext
+
 rm -f nc.ext ncleaf.ext ncbad.ext
 
 # Awkward serial numbers. openssl refuses to encode an illegal string and
