@@ -195,6 +195,13 @@ else
     no "a chain decision disagrees with openssl verify"
 fi
 
+note "chain decisions against certtool --verify, and openssl against certtool"
+if python3 "$HERE/gnutlscmp.py" "$BIN" "$W" "$C"; then
+    ok "every chain decision agrees with GnuTLS where GnuTLS and OpenSSL agree"
+else
+    no "a chain decision disagrees with certtool"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"
