@@ -53,6 +53,34 @@ def certtool_verdict(leaf, anchors, untrusted, purpose, work):
     return ok, line
 
 
+# The scenarios where the two oracles contradict each other, with the
+# cause of each and the side certlint takes. The set is asserted, both
+# ways: a new disagreement fails the suite and so does one that has
+# stopped happening, because this list is the record and a record that
+# drifts is worse than none.
+RECORDED = {
+    "sha1 leaf": (
+        "openssl", "GnuTLS refuses SHA-1 signatures under its default "
+        "verification profile; openssl has no such rule and certlint has "
+        "no policy on digest strength in --verify"),
+    "four long, through a key rollover certificate": (
+        "openssl", "RFC 5280 6.1.4 (l) excludes self-issued certificates "
+        "from the pathlen count. openssl excludes them, GnuTLS counts "
+        "them, so GnuTLS sees two intermediates under a pathlen:1 root"),
+    "an intermediate in breach, with a leaf that is not": (
+        "openssl", "GnuTLS applies name constraints to the end "
+        "certificate and openssl applies them to every certificate below "
+        "the constraining CA"),
+    "a subject DN outside it": (
+        "openssl", "GnuTLS does not check the subject DN against a "
+        "permitted directoryName subtree; openssl does"),
+    "codeSigning on a certificate that offers six purposes": (
+        "certtool", "openssl's codesign purpose refuses a keyUsage "
+        "holding anything beyond digitalSignature and nonRepudiation. "
+        "GnuTLS checks the purpose OID alone, which is what certlint "
+        "does"),
+}
+
 OID = {
     "serverAuth": "1.3.6.1.5.5.7.3.1",
     "clientAuth": "1.3.6.1.5.5.7.3.2",
@@ -92,14 +120,28 @@ def main(argv):
     if splits:
         print("    OpenSSL and GnuTLS disagree about %d of them:" % len(splits))
         for name, ossl, gnutls, owhy, gwhy, got in splits:
+            side = "openssl" if got == ossl else "certtool"
             print("      %s" % name)
             print("        openssl  %s: %s"
                   % ("accepts" if ossl else "refuses", owhy or "-"))
             print("        certtool %s: %s"
                   % ("accepts" if gnutls else "refuses", gwhy or "-"))
             print("        certlint %s, siding with %s"
-                  % ("accepts" if got else "refuses",
-                     "openssl" if got == ossl else "certtool"))
+                  % ("accepts" if got else "refuses", side))
+            rec = RECORDED.get(name)
+            if rec is None:
+                print("        NOT RECORDED: a new oracle disagreement")
+                bad += 1
+            else:
+                print("        cause: %s" % rec[1])
+                if rec[0] != side:
+                    print("        the record says certlint sides with %s"
+                          % rec[0])
+                    bad += 1
+    gone = sorted(set(RECORDED) - {s[0] for s in splits})
+    for name in gone:
+        print("    recorded oracle disagreement no longer happens: %s" % name)
+        bad += 1
     if skipped:
         print("    %d scenarios not put to certtool, which has no -attime: %s"
               % (len(skipped), "; ".join(skipped)))
