@@ -13,6 +13,7 @@ mod ext;
 mod gname;
 mod hash;
 mod key;
+mod lint;
 mod name;
 mod oid;
 mod path;
@@ -29,6 +30,7 @@ const EXIT_OK: u8 = 0;
 const EXIT_MALFORMED: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_CHAIN: u8 = 3;
+const EXIT_LINT: u8 = 4;
 
 const USAGE: &str = "\
 usage: certlint [MODE] [OPTIONS] FILE...
@@ -440,6 +442,18 @@ fn run(a: &Args) -> Result<u8, String> {
                 println!("signature = {}", v.text());
                 if v != sig::Verdict::Valid {
                     worst = EXIT_CHAIN;
+                }
+            }
+            Some(Mode::Lint) | Some(Mode::All) => {
+                let parsed = cert::Cert::parse(&certs[0]).map_err(|e| format!("{}: {}", f, e))?;
+                let d = dump::dump(&parsed);
+                if a.mode == Some(Mode::All) {
+                    d.print();
+                }
+                let r = lint::lint(&parsed, &d);
+                r.print();
+                if r.errors() > 0 {
+                    worst = EXIT_LINT;
                 }
             }
             Some(Mode::Dump) => {

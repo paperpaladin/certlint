@@ -202,6 +202,13 @@ else
     no "a chain decision disagrees with certtool"
 fi
 
+note "--lint against the same rules over python cryptography"
+if python3 "$HERE/lintcmp.py" "$BIN" "$C"/*.pem; then
+    ok "every lint finding matches the rule read off a different parser"
+else
+    no "a lint finding disagrees with the rule over cryptography"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"
