@@ -112,6 +112,7 @@ pub fn lint(_cert: &Cert, d: &Dump) -> Report {
         out: Vec::new(),
     };
     serial(&mut c);
+    validity(&mut c);
     let profile = if is_ca(&c) { "ca" } else { "subscriber" };
     Report {
         findings: c.out,
@@ -170,6 +171,65 @@ fn serial(c: &mut Ctx) {
                  CSPRNG output, of which this is an upper bound",
                 bits
             ),
+        );
+    }
+}
+
+// BR 6.3.2 and RFC 5280 4.1.2.5.
+//
+// 398 days is the subscriber certificate cap since September 2020. It
+// does not apply to a CA certificate, which is why the profile has to be
+// decided before this runs rather than after.
+const DAY: i64 = 86400;
+const MAX_SUBSCRIBER_DAYS: i64 = 398;
+
+fn validity(c: &mut Ctx) {
+    let span = c.num("validity_seconds").unwrap_or(0);
+    if span < 0 {
+        c.say(
+            Level::Error,
+            "validity_inverted",
+            "validity_seconds",
+            format!(
+                "notBefore is {} seconds after notAfter",
+                -span
+            ),
+        );
+    } else if !is_ca(c) && span > MAX_SUBSCRIBER_DAYS * DAY {
+        c.say(
+            Level::Error,
+            "validity_too_long",
+            "validity_seconds",
+            format!(
+                "the certificate is valid for {} days, and BR 6.3.2 allows \
+                 {} for a subscriber certificate",
+                span / DAY,
+                MAX_SUBSCRIBER_DAYS
+            ),
+        );
+    }
+    // RFC 5280 4.1.2.5: a date through 2049 is a UTCTime and 2050 onwards
+    // is a GeneralizedTime. The rule is on the encoding, not on the value,
+    // so it cannot be checked from a parsed date alone.
+    if c.get("validity_encoding_per_rfc5280") == Some("no") {
+        let which = |c: &Ctx, f: &str| -> String {
+            format!(
+                "{} is {}",
+                f,
+                c.get(&format!("{}_encoding", f)).unwrap_or("?")
+            )
+        };
+        let text = format!(
+            "{}, {}, and RFC 5280 4.1.2.5 wants UTCTime through 2049 and \
+             GeneralizedTime from 2050",
+            which(c, "not_before"),
+            which(c, "not_after")
+        );
+        c.say(
+            Level::Error,
+            "validity_encoding",
+            "validity_encoding_per_rfc5280",
+            text,
         );
     }
 }

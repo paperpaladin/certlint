@@ -24,6 +24,7 @@ import sys
 import warnings
 
 from cryptography import x509
+from cryptography.x509.oid import ExtensionOID
 
 
 def serial_octets(s):
@@ -38,7 +39,24 @@ def serial_octets(s):
     return k
 
 
-def expected(c):
+def time_encodings(path):
+    """How the two validity times were encoded, from openssl asn1parse.
+
+    cryptography hands back a datetime and throws the encoding away, and
+    RFC 5280 4.1.2.5 is a rule about the encoding. asn1parse is the
+    third oracle here and the only one that can see it.
+    """
+    r = subprocess.run(["openssl", "asn1parse", "-in", path],
+                       capture_output=True)
+    out = []
+    for line in r.stdout.decode("utf-8", "surrogateescape").splitlines():
+        for tag in ("UTCTIME", "GENERALIZEDTIME"):
+            if " " + tag + " " in line or line.rstrip().endswith(tag):
+                out.append(tag)
+    return out[:2]
+
+
+def expected(c, path):
     """The findings these rules produce, read off cryptography's parse."""
     out = set()
     s = c.serial_number
@@ -50,6 +68,25 @@ def expected(c):
         out.add("serial_too_long")
     if s >= 0 and s.bit_length() < 64:
         out.add("serial_short")
+
+    nb = c.not_valid_before_utc
+    na = c.not_valid_after_utc
+    span = int((na - nb).total_seconds())
+    try:
+        bc = c.extensions.get_extension_for_oid(
+            ExtensionOID.BASIC_CONSTRAINTS).value
+        ca = bc.ca
+    except x509.ExtensionNotFound:
+        ca = False
+    if span < 0:
+        out.add("validity_inverted")
+    elif not ca and span > 398 * 86400:
+        out.add("validity_too_long")
+    enc = time_encodings(path)
+    want = ["UTCTIME" if t.year < 2050 else "GENERALIZEDTIME"
+            for t in (nb, na)]
+    if len(enc) == 2 and enc != want:
+        out.add("validity_encoding")
     return out
 
 
@@ -87,7 +124,7 @@ def main(argv):
                 with open(path, "rb") as fh:
                     der = fh.read()
                 c = x509.load_pem_x509_certificate(der)
-                want = expected(c)
+                want = expected(c, path)
             for w in caught:
                 if issubclass(w.category, ResourceWarning):
                     continue

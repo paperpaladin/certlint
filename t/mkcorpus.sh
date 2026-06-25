@@ -307,9 +307,31 @@ req "/C=GB/O=certlint/CN=negative serial" rsa:2048 serial-negative
 sign serial-negative inter-rsa leaf.ext 90 -3
 req "/C=GB/O=certlint/CN=zero serial" rsa:2048 serial-zero
 sign serial-zero inter-rsa leaf.ext 90 0
+# Either side of the 64 bit floor BR 7.1 sets. 0x4000000000000000 has 63
+# bits and 0x8000000000000000 has 64, and without the pair the floor can
+# be moved by one bit without changing any verdict here.
+req "/C=GB/O=certlint/CN=63 bit serial" rsa:2048 serial-63
+sign serial-63 inter-rsa leaf.ext 90 0x4000000000000000
+req "/C=GB/O=certlint/CN=64 bit serial" rsa:2048 serial-64
+sign serial-64 inter-rsa leaf.ext 90 0x008000000000000000
+
+# Exactly twenty-one octets, which is one over the RFC 5280 limit. The
+# oversized serial below is twenty-two, so an off-by-one in the cap is
+# invisible without this one.
+req "/C=GB/O=certlint/CN=21 octet serial" rsa:2048 serial-21
+sign serial-21 inter-rsa leaf.ext 90 \
+    0x00ffffffffffffffffffffffffffffffffffffffff
 req "/C=GB/O=certlint/CN=oversized serial" rsa:2048 serial-long
 sign serial-long inter-rsa leaf.ext 90 \
     0x00ffeeddccbbaa998877665544332211009988776655
+
+# Either side of the 398 day subscriber cap, to the second. Without a
+# pair at the boundary, moving the cap by one day changes no verdict on
+# this corpus and the rule looks tested while it is not.
+req "/C=GB/O=certlint/CN=398 days" rsa:2048 validity-398
+sign validity-398 inter-rsa leaf.ext 398
+req "/C=GB/O=certlint/CN=399 days" rsa:2048 validity-399
+sign validity-399 inter-rsa leaf.ext 399
 
 # The 2050 boundary, from both sides, and a notBefore in the 1990s so the
 # two-digit year rule is exercised in the direction that means 19xx.

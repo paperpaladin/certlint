@@ -189,7 +189,7 @@ def sign(tbs, cakey):
 
 def build(path, subject, keyfile, cakey, caname,
           version=None, serial=None, exts=None, not_before=b"250101000000Z",
-          not_after=b"350101000000Z", outer_long_len=False):
+          not_after=b"350101000000Z", outer_long_len=False, time_tag=0x17):
     parts = []
     if version is not None:
         parts.append(ctx(0, integer(version)))
@@ -197,7 +197,7 @@ def build(path, subject, keyfile, cakey, caname,
     alg = seq(oid(SHA256_RSA), tlv(0x05, b""))
     parts.append(alg)
     parts.append(caname)
-    parts.append(seq(tlv(0x17, not_before), tlv(0x17, not_after)))
+    parts.append(seq(tlv(time_tag, not_before), tlv(time_tag, not_after)))
     parts.append(subject)
     parts.append(spki_of(keyfile))
     if exts:
@@ -281,6 +281,21 @@ def main():
           exts=[extension("2.5.29.19", seq(), critical=boolean(True, raw=0x01)),
                 san])
     made.append("refuse-critical-one.pem")
+    # A GeneralizedTime for a date before 2050. RFC 5280 4.1.2.5 says
+    # dates through 2049 are UTCTime and openssl will not write anything
+    # else, so this one has to be built by hand. Both oracles parse it.
+    build("time-generalized-early.pem", simple_name("generalized before 2050"),
+          keyfile, cakey, caname, version=2, exts=[bc_leaf, san],
+          time_tag=0x18, not_before=b"20250101000000Z",
+          not_after=b"20350101000000Z")
+    made.append("time-generalized-early.pem")
+
+    # notBefore after notAfter. openssl x509 -req will not emit one.
+    build("time-inverted.pem", simple_name("inverted validity"),
+          keyfile, cakey, caname, version=2, exts=[bc_leaf, san],
+          not_before=b"350101000000Z", not_after=b"250101000000Z")
+    made.append("time-inverted.pem")
+
     build("refuse-length-nonminimal.pem", simple_name("long form length"),
           keyfile, cakey, caname, version=2, exts=[bc_leaf, san],
           outer_long_len=True)
