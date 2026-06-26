@@ -379,7 +379,7 @@ def openssl_date(text):
     return int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
-def from_openssl(path, dropped=[0]):
+def from_openssl(path, dropped=[0, 0]):
     out = {}
     rc, text, errtext = run(["openssl", "x509", "-in", path, "-noout", "-text"])
     if rc != 0:
@@ -424,7 +424,15 @@ def from_openssl(path, dropped=[0]):
                          extname])
         if rc != 0 or ":" not in s2:
             continue
-        body = " ".join(l.strip() for l in s2.splitlines()[1:])
+        # A certificate carrying the extension twice is a defect the
+        # linter reports. openssl prints both blocks one after the other
+        # and there is no way to tell from the text where the first ends,
+        # so the list is left uncompared and counted.
+        if sum(1 for l in s2.splitlines() if "X509v3" in l) > 1:
+            dropped[1] += 1
+            continue
+        body = " ".join(l.strip() for l in s2.splitlines()
+                        if "X509v3" not in l)
         names = [x.strip() for x in body.split(",") if x.strip()]
         conv = [openssl_gn(x) for x in names]
         if all(conv):
@@ -756,7 +764,7 @@ def main(argv):
         def __missing__(self, k):
             return 0
     dn_reasons = Counter()
-    gn_dropped = [0]
+    gn_dropped = [0, 0]
     oracle_refusals = []
     # What the corpus actually reaches. A comparison of a construct the
     # corpus does not hold passes without running anything, so the reached
@@ -878,6 +886,10 @@ def main(argv):
         print("    %d alternative-name lists not compared against openssl:"
               " it prints a name type in a form the harness cannot convert"
               % gn_dropped[0])
+    if gn_dropped[1]:
+        print("    %d alternative-name lists not compared against openssl:"
+              " the extension appears twice and openssl prints the two"
+              " bodies run together" % gn_dropped[1])
     for why, n in sorted(dn_reasons.items()):
         print("    %d DN strings not compared: %s" % (n, why))
     for what in sorted(reached):

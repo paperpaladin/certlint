@@ -89,6 +89,28 @@ impl<'a> Ctx<'a> {
         self.get(k).and_then(|v| v.parse().ok())
     }
 
+    fn all(&self, k: &str) -> Vec<&str> {
+        self.d
+            .lines
+            .iter()
+            .filter(|(key, _)| key == k)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    // The extensions as --dump prints them: OID, criticality, length,
+    // name. Read back out of the dump rather than off the certificate,
+    // for the reason at the top of this file.
+    fn extension(&self, dotted: &str) -> Option<bool> {
+        self.all("extension").iter().find_map(|line| {
+            let mut f = line.split(' ');
+            match (f.next(), f.next()) {
+                (Some(o), Some(crit)) if o == dotted => Some(crit == "critical"),
+                _ => None,
+            }
+        })
+    }
+
     fn say(&mut self, level: Level, code: &'static str, field: &str, text: String) {
         self.out.push(Finding {
             level,
@@ -113,6 +135,7 @@ pub fn lint(_cert: &Cert, d: &Dump) -> Report {
     };
     serial(&mut c);
     validity(&mut c);
+    extensions(&mut c);
     let profile = if is_ca(&c) { "ca" } else { "subscriber" };
     Report {
         findings: c.out,
@@ -230,6 +253,127 @@ fn validity(c: &mut Ctx) {
             "validity_encoding",
             "validity_encoding_per_rfc5280",
             text,
+        );
+    }
+}
+
+// BR 7.1.2 and RFC 5280 4.2, per certificate type.
+//
+// The split matters: a CA certificate with no basicConstraints is a
+// different defect from a subscriber certificate with one, and a rule
+// written for both at once gets one of the two wrong.
+const EXT_BASIC_CONSTRAINTS: &str = "2.5.29.19";
+const EXT_KEY_USAGE: &str = "2.5.29.15";
+const EXT_SUBJECT_ALT_NAME: &str = "2.5.29.17";
+const EXT_EXT_KEY_USAGE: &str = "2.5.29.37";
+const EXT_SUBJECT_KEY_ID: &str = "2.5.29.14";
+const EXT_AUTHORITY_KEY_ID: &str = "2.5.29.35";
+
+fn extensions(c: &mut Ctx) {
+    let ca = is_ca(c);
+    let self_issued = c.get("issuer_rfc4514") == c.get("subject_rfc4514");
+
+    let dups: Vec<String> = c.all("extension_duplicate").iter().map(|s| s.to_string()).collect();
+    for dup in dups {
+        c.say(
+            Level::Error,
+            "extension_duplicate",
+            "extension_duplicate",
+            format!(
+                "{} appears more than once, and RFC 5280 4.2 allows one \
+                 instance of each",
+                dup
+            ),
+        );
+    }
+
+    if ca {
+        // The CA profile. basicConstraints is present by definition here,
+        // since it is what made is_ca true, so the rule is about its
+        // criticality.
+        if c.extension(EXT_BASIC_CONSTRAINTS) == Some(false) {
+            c.say(
+                Level::Error,
+                "ca_basic_constraints_not_critical",
+                "extension",
+                "basicConstraints on a CA certificate is not critical, and \
+                 RFC 5280 4.2.1.9 says it must be"
+                    .to_string(),
+            );
+        }
+        match c.extension(EXT_KEY_USAGE) {
+            None => c.say(
+                Level::Error,
+                "ca_key_usage_missing",
+                "has_extensions",
+                "a CA certificate with no keyUsage, which BR 7.1.2.1 \
+                 requires"
+                    .to_string(),
+            ),
+            Some(false) => c.say(
+                Level::Error,
+                "ca_key_usage_not_critical",
+                "extension",
+                "keyUsage on a CA certificate is not critical, and BR \
+                 7.1.2.1 says it must be"
+                    .to_string(),
+            ),
+            Some(true) => {}
+        }
+        if c.extension(EXT_SUBJECT_KEY_ID).is_none() {
+            c.say(
+                Level::Error,
+                "ca_subject_key_id_missing",
+                "has_extensions",
+                "a CA certificate with no subjectKeyIdentifier, which RFC \
+                 5280 4.2.1.2 requires"
+                    .to_string(),
+            );
+        }
+    } else {
+        // The subscriber profile.
+        if c.extension(EXT_SUBJECT_ALT_NAME).is_none() {
+            c.say(
+                Level::Error,
+                "san_missing",
+                "has_extensions",
+                "a subscriber certificate with no subjectAltName, which BR \
+                 7.1.4.2.1 requires"
+                    .to_string(),
+            );
+        }
+        if c.extension(EXT_EXT_KEY_USAGE).is_none() {
+            c.say(
+                Level::Error,
+                "eku_missing",
+                "has_extensions",
+                "a subscriber certificate with no extendedKeyUsage, which \
+                 BR 7.1.2.3 requires"
+                    .to_string(),
+            );
+        }
+        if c.get("key_usage").map(|k| k.contains("keyCertSign")) == Some(true) {
+            c.say(
+                Level::Error,
+                "key_cert_sign_on_subscriber",
+                "key_usage",
+                "a certificate that is not a CA with keyCertSign in its \
+                 keyUsage"
+                    .to_string(),
+            );
+        }
+    }
+
+    // RFC 5280 4.2.1.1: every certificate that is not self-issued carries
+    // an authorityKeyIdentifier.
+    if !self_issued && c.extension(EXT_AUTHORITY_KEY_ID).is_none() {
+        c.say(
+            Level::Error,
+            "aki_missing",
+            "issuer_rfc4514",
+            "no authorityKeyIdentifier on a certificate issued by somebody \
+             else, which RFC 5280 4.2.1.1 requires"
+                .to_string(),
         );
     }
 }

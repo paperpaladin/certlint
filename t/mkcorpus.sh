@@ -391,6 +391,32 @@ openssl x509 -req -in leaf-under-leaf.csr -CA leaf-rsa.pem -CAkey leaf-rsa.key \
     -set_serial "$(bigserial)" -days 90 -sha256 -extfile leaf.ext \
     -extensions v3 -out leaf-under-leaf.pem >/dev/null 2>&1
 
+# A CA certificate that breaks the CA profile three ways: a
+# basicConstraints that is not critical, a keyUsage that is not either,
+# and no subjectKeyIdentifier at all. Every other CA here is correct, so
+# the three CA rules had nothing to fire on.
+cat > sloppyca.ext <<'X'
+[ v3 ]
+basicConstraints = CA:TRUE
+keyUsage = keyCertSign,cRLSign
+X
+req "/C=GB/O=certlint/CN=certlint Sloppy Intermediate" rsa:2048 inter-sloppy
+sign inter-sloppy root-rsa sloppyca.ext 1825
+
+# And one with no keyUsage, no subjectKeyIdentifier and no
+# authorityKeyIdentifier. openssl adds the last two on its own unless the
+# profile says none, which is the only way to get a certificate without
+# them out of it.
+cat > bareca.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:TRUE
+subjectKeyIdentifier = none
+authorityKeyIdentifier = none
+X
+req "/C=GB/O=certlint/CN=certlint Bare Intermediate" rsa:2048 inter-bare
+sign inter-bare root-rsa bareca.ext 1825
+rm -f sloppyca.ext bareca.ext
+
 # A key rollover certificate, which is the only reason the pathlen count
 # excludes self-issued certificates. roll-rsa has the RSA root's subject
 # and issuer and a new key, and is signed by the old root key; inter2 and

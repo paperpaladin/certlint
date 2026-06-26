@@ -19,6 +19,7 @@ Certificates cryptography will not parse are refusals, counted on their
 own line and never folded into the agreement figure.
 """
 import os
+import re
 import subprocess
 import sys
 import warnings
@@ -82,6 +83,34 @@ def expected(c, path):
         out.add("validity_inverted")
     elif not ca and span > 398 * 86400:
         out.add("validity_too_long")
+    present = {e.oid.dotted_string: e.critical for e in c.extensions}
+    dotted = set(present)
+    if len(dotted) != len(list(c.extensions)):
+        out.add("extension_duplicate")
+    if ca:
+        if present.get("2.5.29.19") is False:
+            out.add("ca_basic_constraints_not_critical")
+        if "2.5.29.15" not in dotted:
+            out.add("ca_key_usage_missing")
+        elif present["2.5.29.15"] is False:
+            out.add("ca_key_usage_not_critical")
+        if "2.5.29.14" not in dotted:
+            out.add("ca_subject_key_id_missing")
+    else:
+        if "2.5.29.17" not in dotted:
+            out.add("san_missing")
+        if "2.5.29.37" not in dotted:
+            out.add("eku_missing")
+        try:
+            ku = c.extensions.get_extension_for_oid(
+                ExtensionOID.KEY_USAGE).value
+            if ku.key_cert_sign:
+                out.add("key_cert_sign_on_subscriber")
+        except x509.ExtensionNotFound:
+            pass
+    if c.issuer != c.subject and "2.5.29.35" not in dotted:
+        out.add("aki_missing")
+
     enc = time_encodings(path)
     want = ["UTCTIME" if t.year < 2050 else "GENERALIZEDTIME"
             for t in (nb, na)]
@@ -106,6 +135,20 @@ def ours(binary, path):
     return codes, fields, dumped, r.returncode
 
 
+def all_codes(src):
+    """Every code the linter can emit, read out of its source.
+
+    There is no runtime list to ask for, and inventing one here would
+    drift from the code it describes. This reads the second argument of
+    every say() call instead, so a rule added without a corpus
+    certificate to reach it shows up as unreached rather than as
+    nothing.
+    """
+    text = open(src).read()
+    return set(re.findall(r'Level::(?:Error|Warning),\s*\n\s*"([a-z0-9_]+)"',
+                          text))
+
+
 def main(argv):
     binary = argv[1]
     files = argv[2:]
@@ -113,8 +156,15 @@ def main(argv):
     n = 0
     refused = 0
     warned = 0
+    ourrefused = 0
     reached = {}
     for path in sorted(files):
+        got, fields, dumped, rc = ours(binary, path)
+        # Reach is counted over every corpus file, including the ones no
+        # oracle will parse. A rule nothing reaches is a rule the suite
+        # is not testing, whatever the agreement figure says.
+        for code in got:
+            reached[code] = reached.get(code, 0) + 1
         try:
             # cryptography warns rather than refuses on some of these and
             # says it will refuse in a later release. A warning from an
@@ -136,10 +186,15 @@ def main(argv):
             print("    ORACLE REFUSED %s: %s" % (os.path.basename(path),
                                                  str(e)[:70]))
             continue
-        got, fields, dumped, rc = ours(binary, path)
+        if rc == 1:
+            # certlint refused the file. That is a refusal, not a
+            # disagreement about a rule, and the dump comparison is where
+            # it is measured against the oracles.
+            ourrefused += 1
+            print("    CERTLINT REFUSED %s, where cryptography parsed it"
+                  % os.path.basename(path))
+            continue
         n += 1
-        for code in got:
-            reached[code] = reached.get(code, 0) + 1
         if got != want:
             bad += 1
             print("    %s: certlint %s, the rules over cryptography %s"
@@ -154,7 +209,21 @@ def main(argv):
             bad += 1
             print("    %s: --all exited %d" % (os.path.basename(path), rc))
     print("    %d certificates linted, %d disagreed, %d refused by "
-          "cryptography, %d warnings from it" % (n, bad, refused, warned))
+          "cryptography, %d refused by certlint, %d warnings from "
+          "cryptography" % (n, bad, refused, ourrefused, warned))
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "src", "lint.rs")
+    codes = all_codes(src)
+    missing = sorted(codes - set(reached))
+    if missing:
+        print("    rules no corpus certificate reaches: %s"
+              % " ".join(missing))
+        bad += len(missing)
+    extra = sorted(set(reached) - codes)
+    if extra:
+        print("    findings whose code is not in the source: %s"
+              % " ".join(extra))
+        bad += len(extra)
     print("    rules reached by the corpus: %d (%s)"
           % (len(reached),
              " ".join("%s=%d" % kv for kv in sorted(reached.items()))))

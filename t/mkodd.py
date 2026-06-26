@@ -296,6 +296,19 @@ def main():
           not_before=b"350101000000Z", not_after=b"250101000000Z")
     made.append("time-inverted.pem")
 
+    # Extensions in a certificate with no version field, which makes it
+    # version 1. RFC 5280 4.1.2.9 allows extensions in version 3 only, and
+    # certlint refuses it at the parser. So does certtool; openssl and
+    # python cryptography both parse it and report version 1.
+    build("refuse-v1-extensions.pem", simple_name("version one with extensions"),
+          keyfile, cakey, caname, exts=[bc_leaf, san])
+    made.append("refuse-v1-extensions.pem")
+
+    # The same extension twice, which RFC 5280 4.2 forbids.
+    build("ext-duplicate.pem", simple_name("duplicate extension"),
+          keyfile, cakey, caname, version=2, exts=[bc_leaf, san, san])
+    made.append("ext-duplicate.pem")
+
     build("refuse-length-nonminimal.pem", simple_name("long form length"),
           keyfile, cakey, caname, version=2, exts=[bc_leaf, san],
           outer_long_len=True)
