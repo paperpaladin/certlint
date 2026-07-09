@@ -346,6 +346,38 @@ openssl x509 -req -in time-gen2050.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
     -not_before 20490101000000Z -not_after 20500101000000Z \
     -out time-gen2050.pem >/dev/null 2>&1
 
+# Wildcards and hostnames the Baseline Requirements do not allow.
+# openssl writes a dNSName as whatever IA5String it is given, so these
+# come from the generator rather than from a hand-built TLV. leaf-full
+# already carries a legal *.wild.example.com, which is the other half:
+# a rule that refuses every wildcard would pass a corpus of bad ones.
+cat > badnames.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:w*.example.com,DNS:a.*.example.com,DNS:under_score.example.com
+X
+req "/C=GB/O=certlint/CN=w*.example.com" rsa:2048 leaf-badnames
+sign leaf-badnames inter-rsa badnames.ext 90
+rm -f badnames.ext
+
+# An empty label, which is what a trailing dot gives.
+cat > emptylabel.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:trailing.example.com.
+X
+req "/C=GB/O=certlint/CN=trailing.example.com." rsa:2048 leaf-trailingdot
+sign leaf-trailingdot inter-rsa emptylabel.ext 90
+rm -f emptylabel.ext
+
 # A cross-signed root. root-cross is self-signed; cross-rsa carries the
 # same subject and the same public key and is signed by the RSA root. A
 # leaf under that key therefore has two valid paths, one of length two

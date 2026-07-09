@@ -304,6 +304,15 @@ def main():
           keyfile, cakey, caname, exts=[bc_leaf, san])
     made.append("refuse-v1-extensions.pem")
 
+    # An iPAddress that is neither four nor sixteen octets. openssl will
+    # not encode one: it parses the text as an address first.
+    build("ip-bad-length.pem", simple_name("five octet address"),
+          keyfile, cakey, caname, version=2,
+          exts=[bc_leaf,
+                extension("2.5.29.17", seq(ctx(7, b"\x01\x02\x03\x04\x05",
+                                               False)))])
+    made.append("ip-bad-length.pem")
+
     # The same extension twice, which RFC 5280 4.2 forbids.
     build("ext-duplicate.pem", simple_name("duplicate extension"),
           keyfile, cakey, caname, version=2, exts=[bc_leaf, san, san])

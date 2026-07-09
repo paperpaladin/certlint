@@ -136,6 +136,7 @@ pub fn lint(_cert: &Cert, d: &Dump) -> Report {
     serial(&mut c);
     validity(&mut c);
     extensions(&mut c);
+    names(&mut c);
     let profile = if is_ca(&c) { "ca" } else { "subscriber" };
     Report {
         findings: c.out,
@@ -375,5 +376,87 @@ fn extensions(c: &mut Ctx) {
              else, which RFC 5280 4.2.1.1 requires"
                 .to_string(),
         );
+    }
+}
+
+// BR 7.1.4.2.1 and RFC 5280 4.2.1.6, over the SubjectAltName.
+//
+// The rules are per name type and each type has its own trap, so they
+// are written out rather than folded into one loop with a flag.
+fn dns_problems(h: &str) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    let labels: Vec<&str> = h.split('.').collect();
+    if h.is_empty() || labels.iter().any(|l| l.is_empty()) {
+        out.push((
+            "dns_bad_label",
+            format!("{} has an empty label", if h.is_empty() { "the name" } else { h }),
+        ));
+        return out;
+    }
+    for (i, l) in labels.iter().enumerate() {
+        if i == 0 && *l == "*" {
+            continue;
+        }
+        if l.contains('*') {
+            if i == 0 {
+                out.push((
+                    "wildcard_partial_label",
+                    format!(
+                        "{} has a wildcard sharing its label, and BR \
+                         7.1.4.2.1 wants the whole leftmost label",
+                        h
+                    ),
+                ));
+            } else {
+                out.push((
+                    "wildcard_not_leftmost",
+                    format!("{} has a wildcard outside the leftmost label", h),
+                ));
+            }
+            continue;
+        }
+        if !l
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        {
+            out.push((
+                "dns_bad_label",
+                format!("{} has a label outside the letter, digit and hyphen set", h),
+            ));
+        }
+    }
+    out
+}
+
+fn names(c: &mut Ctx) {
+    let san: Vec<String> = c.all("san").iter().map(|s| s.to_string()).collect();
+    let mut said: Vec<&'static str> = Vec::new();
+    for n in &san {
+        if let Some(h) = n.strip_prefix("DNS:") {
+            for (code, text) in dns_problems(h) {
+                if said.contains(&code) {
+                    continue;
+                }
+                said.push(code);
+                c.say(Level::Error, code, "san", text);
+            }
+        }
+        // --dump writes an iPAddress of any other width as the octet
+        // count, because there is no dotted form for it to print.
+        if let Some(ip) = n.strip_prefix("IP:") {
+            if ip.starts_with('<') && !said.contains(&"ip_bad_length") {
+                said.push("ip_bad_length");
+                c.say(
+                    Level::Error,
+                    "ip_bad_length",
+                    "san",
+                    format!(
+                        "an iPAddress of {}, and RFC 5280 4.2.1.6 has 4 for \
+                         IPv4 and 16 for IPv6",
+                        ip.trim_matches(|ch| ch == '<' || ch == '>')
+                    ),
+                );
+            }
+        }
     }
 }

@@ -594,7 +594,7 @@ def gnutls_date(text):
     return int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
-def from_certtool(path):
+def from_certtool(path, dropped=[0]):
     out = {}
     rc, text, errtext = run(["certtool", "--certificate-info", "--infile",
                              path])
@@ -709,6 +709,13 @@ def from_certtool(path):
                 got = None
                 break
             got.append("%s:%s" % (GN[k], v))
+        # certtool writes an iPAddress it cannot render as "(error)" and
+        # certlint writes the octet count. Both say the address is the
+        # wrong width and neither says the same thing, so the list is
+        # left uncompared against certtool and counted.
+        if got is not None and any(g == "IP:(error)" for g in got):
+            dropped[0] += 1
+            got = None
         if got is not None:
             out[dest] = tuple(got)
     names = []
@@ -765,6 +772,7 @@ def main(argv):
             return 0
     dn_reasons = Counter()
     gn_dropped = [0, 0]
+    ct_dropped = [0]
     oracle_refusals = []
     # What the corpus actually reaches. A comparison of a construct the
     # corpus does not hold passes without running anything, so the reached
@@ -780,7 +788,7 @@ def main(argv):
         oracle_says = {}
         for n, f in (("cryptography", from_cryptography),
                      ("openssl", lambda p: from_openssl(p, gn_dropped)),
-                     ("certtool", from_certtool)):
+                     ("certtool", lambda p: from_certtool(p, ct_dropped))):
             oracle_says[n] = "refuses" if "__refused__" in f(path) \
                 else "accepts"
         if mine is None:
@@ -811,7 +819,7 @@ def main(argv):
         oracles = {
             "cryptography": from_cryptography(path),
             "openssl": from_openssl(path, gn_dropped),
-            "certtool": from_certtool(path),
+            "certtool": from_certtool(path, ct_dropped),
         }
         for n in list(oracles):
             if "__refused__" in oracles[n]:
@@ -890,6 +898,10 @@ def main(argv):
         print("    %d alternative-name lists not compared against openssl:"
               " the extension appears twice and openssl prints the two"
               " bodies run together" % gn_dropped[1])
+    if ct_dropped[0]:
+        print("    %d alternative-name lists not compared against certtool:"
+              " it writes an iPAddress of the wrong width as (error) and"
+              " certlint writes the octet count" % ct_dropped[0])
     for why, n in sorted(dn_reasons.items()):
         print("    %d DN strings not compared: %s" % (n, why))
     for what in sorted(reached):

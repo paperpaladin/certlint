@@ -111,6 +111,29 @@ def expected(c, path):
     if c.issuer != c.subject and "2.5.29.35" not in dotted:
         out.add("aki_missing")
 
+    # The SubjectAltName rules, over cryptography's own GeneralName
+    # objects rather than over certlint's printed form.
+    try:
+        san = c.extensions.get_extension_for_oid(
+            ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
+        hosts = san.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        hosts = []
+    for h in hosts:
+        labels = h.split(".")
+        if h == "" or any(l == "" for l in labels):
+            out.add("dns_bad_label")
+            continue
+        for i, l in enumerate(labels):
+            if i == 0 and l == "*":
+                continue
+            if "*" in l:
+                out.add("wildcard_partial_label" if i == 0
+                        else "wildcard_not_leftmost")
+            elif not all(ch.isascii() and (ch.isalnum() or ch == "-")
+                         for ch in l):
+                out.add("dns_bad_label")
+
     enc = time_encodings(path)
     want = ["UTCTIME" if t.year < 2050 else "GENERALIZEDTIME"
             for t in (nb, na)]
@@ -145,8 +168,12 @@ def all_codes(src):
     nothing.
     """
     text = open(src).read()
-    return set(re.findall(r'Level::(?:Error|Warning),\s*\n\s*"([a-z0-9_]+)"',
-                          text))
+    codes = set(re.findall(r'Level::(?:Error|Warning),\s*"([a-z0-9_]+)"',
+                           text))
+    # The per-name-type rules build their codes in a table and hand them
+    # to say() in a variable, so the call site does not name them.
+    codes |= set(re.findall(r'out\.push\(\(\s*"([a-z0-9_]+)",', text))
+    return codes
 
 
 def main(argv):
