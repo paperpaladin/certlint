@@ -137,6 +137,7 @@ pub fn lint(_cert: &Cert, d: &Dump) -> Report {
     validity(&mut c);
     extensions(&mut c);
     names(&mut c);
+    subject(&mut c);
     let profile = if is_ca(&c) { "ca" } else { "subscriber" };
     Report {
         findings: c.out,
@@ -457,6 +458,98 @@ fn names(c: &mut Ctx) {
                     ),
                 );
             }
+        }
+    }
+}
+
+// BR 7.1.4.2.2 and 7.1.4.2, over the subject.
+//
+// The commonName rule is the classic finding: a name in the subject
+// that is not in the SubjectAltName is a name nothing will match on and
+// nothing has checked.
+const AT_COMMON_NAME: &str = "2.5.4.3";
+
+fn subject(c: &mut Ctx) {
+    let attrs: Vec<String> = c.all("subject_attr").iter().map(|s| s.to_string()).collect();
+    let types: Vec<String> = c
+        .all("subject_attr_type")
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let value_of = |a: &str| -> (String, String) {
+        match a.split_once(' ') {
+            Some((o, v)) => (o.to_string(), v.to_string()),
+            None => (a.to_string(), String::new()),
+        }
+    };
+
+    for a in &attrs {
+        let (o, v) = value_of(a);
+        if v.is_empty() {
+            c.say(
+                Level::Error,
+                "subject_empty_value",
+                "subject_attr",
+                format!("the subject attribute {} has an empty value", o),
+            );
+        }
+    }
+
+    // BR 7.1.4.2 allows PrintableString and UTF8String in a subject and
+    // nothing else, which rules out the three DirectoryString choices
+    // openssl will not write but other software does.
+    for t in &types {
+        let (o, tag) = value_of(t);
+        if tag != "PRINTABLESTRING" && tag != "UTF8STRING" {
+            c.say(
+                Level::Warning,
+                "subject_string_type",
+                "subject_attr_type",
+                format!(
+                    "the subject attribute {} is a {}, and BR 7.1.4.2 allows \
+                     PrintableString and UTF8String",
+                    o, tag
+                ),
+            );
+        }
+    }
+
+    let cns: Vec<String> = attrs
+        .iter()
+        .map(|a| value_of(a))
+        .filter(|(o, _)| o == AT_COMMON_NAME)
+        .map(|(_, v)| v)
+        .collect();
+    if cns.len() > 1 {
+        c.say(
+            Level::Error,
+            "subject_two_common_names",
+            "subject_attr",
+            format!("the subject has {} commonName attributes", cns.len()),
+        );
+    }
+    if is_ca(c) {
+        return;
+    }
+    let san: Vec<String> = c.all("san").iter().map(|s| s.to_string()).collect();
+    for cn in &cns {
+        let found = san.iter().any(|n| {
+            n.strip_prefix("DNS:")
+                .map(|h| h.eq_ignore_ascii_case(cn))
+                .unwrap_or(false)
+                || n.strip_prefix("IP:").map(|h| h == cn).unwrap_or(false)
+        });
+        if !found {
+            c.say(
+                Level::Error,
+                "common_name_not_in_san",
+                "subject_attr",
+                format!(
+                    "the commonName {} is not a dNSName or iPAddress in the \
+                     subjectAltName, and BR 7.1.4.2.2 requires it to be",
+                    cn
+                ),
+            );
         }
     }
 }

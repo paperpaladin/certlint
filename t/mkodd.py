@@ -304,6 +304,18 @@ def main():
           keyfile, cakey, caname, exts=[bc_leaf, san])
     made.append("refuse-v1-extensions.pem")
 
+    # An attribute whose value is the empty string. openssl drops an
+    # empty component from -subj rather than encoding one.
+    build("subject-empty-value.pem",
+          name(rdn(atv(C, printable("GB"))),
+               rdn(atv(O, printable(""))),
+               rdn(atv(CN, printable("empty.example.com")))),
+          keyfile, cakey, caname, version=2,
+          exts=[bc_leaf,
+                extension("2.5.29.17",
+                          seq(ctx(2, b"empty.example.com", False)))])
+    made.append("subject-empty-value.pem")
+
     # An iPAddress that is neither four nor sixteen octets. openssl will
     # not encode one: it parses the text as an address first.
     build("ip-bad-length.pem", simple_name("five octet address"),

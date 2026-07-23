@@ -134,6 +134,33 @@ def expected(c, path):
                          for ch in l):
                 out.add("dns_bad_label")
 
+    # The subject rules. cryptography keeps the DirectoryString choice
+    # on each attribute, which openssl and certtool both throw away
+    # after decoding, so it is the only one of the three that can see
+    # the BR 7.1.4.2 string type rule.
+    cns = []
+    for a in c.subject:
+        if a.value == "":
+            out.add("subject_empty_value")
+        if a._type.name not in ("PrintableString", "UTF8String"):
+            out.add("subject_string_type")
+        if a.oid.dotted_string == "2.5.4.3":
+            cns.append(a.value)
+    if len(cns) > 1:
+        out.add("subject_two_common_names")
+    if not ca:
+        try:
+            san = c.extensions.get_extension_for_oid(
+                ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
+            matchable = [h.lower() for h in san.get_values_for_type(x509.DNSName)]
+            matchable += [str(i) for i in san.get_values_for_type(
+                x509.IPAddress)]
+        except x509.ExtensionNotFound:
+            matchable = []
+        for cn in cns:
+            if cn.lower() not in matchable and cn not in matchable:
+                out.add("common_name_not_in_san")
+
     enc = time_encodings(path)
     want = ["UTCTIME" if t.year < 2050 else "GENERALIZEDTIME"
             for t in (nb, na)]

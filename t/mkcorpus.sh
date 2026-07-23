@@ -346,6 +346,41 @@ openssl x509 -req -in time-gen2050.csr -CA inter-rsa.pem -CAkey inter-rsa.key \
     -not_before 20490101000000Z -not_after 20500101000000Z \
     -out time-gen2050.pem >/dev/null 2>&1
 
+# Two commonName attributes in one subject. The empty-valued attribute
+# that goes with this rule is in mkodd.py, because openssl drops an
+# empty component from -subj instead of encoding it.
+req "/C=GB/O=certlint/CN=first.example.com/CN=second.example.com" rsa:2048 \
+    subject-two-cn
+sign subject-two-cn inter-rsa leaf.ext 90
+
+# A commonName that matches a dNSName only when the comparison ignores
+# case, and one that is an iPAddress rather than a hostname. Without the
+# pair, matching case-sensitively and ignoring iPAddress entries both
+# change no verdict on this corpus.
+cat > mixedcase.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:mixed.example.com
+X
+cat > cnip.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = IP:192.0.2.7
+X
+req "/C=GB/O=certlint/CN=Mixed.Example.Com" rsa:2048 subject-mixed-case
+sign subject-mixed-case inter-rsa mixedcase.ext 90
+req "/C=GB/O=certlint/CN=192.0.2.7" rsa:2048 subject-cn-ip
+sign subject-cn-ip inter-rsa cnip.ext 90
+rm -f mixedcase.ext cnip.ext
+
 # Wildcards and hostnames the Baseline Requirements do not allow.
 # openssl writes a dNSName as whatever IA5String it is given, so these
 # come from the generator rather than from a hand-built TLV. leaf-full
