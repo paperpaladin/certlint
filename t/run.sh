@@ -209,6 +209,14 @@ else
     no "a lint finding disagrees with the rule over cryptography"
 fi
 
+note "truncation and corruption"
+if python3 "$HERE/corrupt.py" "$BIN" "$W" "$C/leaf-rsa.pem" \
+        "$C/leaf-full.pem" "$C/leaf-ec.pem"; then
+    ok "every truncated and corrupted file got an answer, not a crash"
+else
+    no "a truncated or corrupted file crashed certlint or got no diagnostic"
+fi
+
 note "the OID table"
 if python3 "$HERE/oidtable.py" "$BIN"; then
     ok "every OID certlint names is one openssl and cryptography accept"
