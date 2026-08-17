@@ -53,6 +53,17 @@ def long_len_tlv(tag, body):
     return bytes([tag, 0x80 | len(b)]) + bytes(b) + body
 
 
+def short_in_long_tlv(tag, body):
+    """A TLV whose length is under 0x80 and written in long form anyway.
+
+    DER says the shortest form that fits, so 0x81 0x05 is an encoding
+    error where 0x05 is correct. It is a different rule from the
+    redundant-leading-zero one and needs its own certificate.
+    """
+    assert len(body) < 0x80
+    return bytes([tag, 0x81, len(body)]) + body
+
+
 def seq(*xs):
     return tlv(0x30, b"".join(xs))
 
@@ -315,6 +326,24 @@ def main():
                 extension("2.5.29.17",
                           seq(ctx(2, b"empty.example.com", False)))])
     made.append("subject-empty-value.pem")
+
+    # An extnValue whose length is 0x81 0x0f where 0x0f would do.
+    build("refuse-length-shortform.pem", simple_name("short length in long form"),
+          keyfile, cakey, caname, version=2,
+          exts=[bc_leaf,
+                seq(oid("2.5.29.17"),
+                    short_in_long_tlv(
+                        0x04, seq(ctx(2, b"odd.example.com", False))))])
+    made.append("refuse-length-shortform.pem")
+
+    # An OID arc whose first octet is 0x80, which is a leading zero in
+    # base 128 and is the same rule as a leading zero in a length.
+    build("refuse-oid-nonminimal.pem", simple_name("non-minimal oid arc"),
+          keyfile, cakey, caname, version=2,
+          exts=[bc_leaf,
+                seq(tlv(0x06, bytes([0x55, 0x1d, 0x80, 0x11])),
+                    tlv(0x04, seq(ctx(2, b"odd.example.com", False))))])
+    made.append("refuse-oid-nonminimal.pem")
 
     # An iPAddress that is neither four nor sixteen octets. openssl will
     # not encode one: it parses the text as an address first.

@@ -12,4 +12,7 @@ clean:
 	$(CARGO) clean
 	rm -rf t/corpus t/scratch
 
-.PHONY: all test clean
+.PHONY: all test clean mutants
+
+mutants: all
+	python3 t/mutants.py

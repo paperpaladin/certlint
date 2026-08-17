@@ -102,8 +102,8 @@ def main(argv):
             continue
         gnutls, gwhy = certtool_verdict(leaf, anchors, untrusted, purpose,
                                         work)
-        ossl, owhy = chaincmp.openssl_verdict(leaf, anchors, untrusted, None,
-                                              work, extra, purpose)
+        ossl, owhy, _ = chaincmp.openssl_verdict(leaf, anchors, untrusted,
+                                                 None, work, extra, purpose)
         got, ourwhy, rc, plen = chaincmp.ours(binary, leaf, anchors,
                                               untrusted, None, purpose)
         n += 1

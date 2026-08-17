@@ -450,6 +450,26 @@ sign subca-rsa inter-rsa sub.ext 1825
 req "/C=GB/O=certlint/CN=deep.example.com" rsa:2048 leaf-deep
 sign leaf-deep subca-rsa leaf.ext 90
 
+# A certificate that says it is not a CA and has keyCertSign anyway,
+# with a leaf under it. leaf-rsa has neither, so once the keyUsage rule
+# existed it refused that chain first and the basicConstraints rule had
+# nothing of its own left to refuse.
+cat > notca.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+X
+req "/C=GB/O=certlint/CN=notca.example.com" rsa:2048 leaf-notca
+sign leaf-notca inter-rsa notca.ext 1825
+req "/C=GB/O=certlint/CN=under-notca.example.com" rsa:2048 leaf-under-notca
+openssl x509 -req -in leaf-under-notca.csr -CA leaf-notca.pem \
+    -CAkey leaf-notca.key -set_serial "$(bigserial)" -days 90 -sha256 \
+    -extfile leaf.ext -extensions v3 -out leaf-under-notca.pem \
+    >/dev/null 2>&1
+rm -f notca.ext
+
 # A certificate issued by a leaf. openssl x509 -req signs with any key it
 # is handed and does not ask whether the signer is a CA, so this is a
 # real signature from a certificate whose basicConstraints says CA:FALSE.

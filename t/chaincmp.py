@@ -82,6 +82,11 @@ def scenarios():
          ["leaf-rsa"], [], None, ["-partial_chain"]),
         ("four long, through a key rollover certificate", "leaf-roll",
          ["root-rsa"], ["inter2-rsa", "roll-rsa"], None, []),
+        # The issuer here has keyCertSign and says CA:FALSE, so only the
+        # basicConstraints rule can refuse it. leaf-rsa, which the two
+        # scenarios above use, is refused by the keyUsage rule first.
+        ("issued by something with keyCertSign that is not a CA",
+         "leaf-under-notca", ["leaf-notca"], [], None, ["-partial_chain"]),
         ("an intermediate with no basicConstraints", "leaf-nobc",
          ["root-rsa"], ["inter-nobc"], None, []),
         ("a CA whose keyUsage has no keyCertSign", "leaf-nokcs",
@@ -126,6 +131,18 @@ def scenarios():
     return [x for x in s if os.path.exists(p(x[1]))]
 
 
+# Scenarios where both accept and the two build different paths, with
+# the reason. Asserted both ways, like the verdict differences: a new
+# length difference fails, and one of these agreeing fails too.
+LENGTH_DIFFS = {
+    "root verifies against itself":
+        "the subject certificate is itself a trust anchor. openssl stops "
+        "there and reports a chain of one; certlint still builds a path to "
+        "the anchor copy in the store and checks the self-signature, so it "
+        "reports two",
+}
+
+
 # openssl verify names the same purposes differently.
 OSSL_PURPOSE = {
     "serverAuth": "sslserver",
@@ -143,7 +160,7 @@ def run(cmd):
 
 
 def openssl_verdict(leaf, anchors, untrusted, attime, work, extra, purpose):
-    cmd = ["openssl", "verify"] + list(extra)
+    cmd = ["openssl", "verify", "-show_chain"] + list(extra)
     if purpose:
         cmd += ["-purpose", OSSL_PURPOSE[purpose]]
     ca = os.path.join(work, "anchors.pem")
@@ -167,7 +184,13 @@ def openssl_verdict(leaf, anchors, untrusted, attime, work, extra, purpose):
         reason = m.group(1).strip()
     elif rc != 0:
         reason = (out + err).strip().splitlines()[-1] if (out + err).strip() else ""
-    return rc == 0, reason
+    # The chain openssl actually built, so that two implementations
+    # agreeing on the verdict can still be compared on the path. A
+    # cross-signed root gives two valid answers and the verdict alone
+    # cannot tell which one was found.
+    depth = len([l for l in (out + err).splitlines()
+                 if l.startswith("depth=")])
+    return rc == 0, reason, depth
 
 
 def ours(binary, leaf, anchors, untrusted, attime, purpose):
@@ -250,13 +273,26 @@ def main(argv):
     lengths = {}
     for (name, leaf, anchors, untrusted, attime, extra, purpose,
          known) in scenarios():
-        want, why = openssl_verdict(leaf, anchors, untrusted, attime, work,
-                                    extra, purpose)
+        want, why, wantlen = openssl_verdict(leaf, anchors, untrusted,
+                                             attime, work, extra, purpose)
         got, ourwhy, rc, plen = ours(binary, leaf, anchors, untrusted, attime,
                                      purpose)
         n += 1
         if got:
             lengths[name] = plen
+        if want and got and wantlen:
+            rec = LENGTH_DIFFS.get(name)
+            if plen != wantlen and rec is None:
+                bad += 1
+                print("    %s: both accept, certlint built a path of %d and "
+                      "openssl one of %d" % (name, plen, wantlen))
+            elif rec is not None:
+                print("    recorded path difference %s: certlint %d, "
+                      "openssl %d" % (name, plen, wantlen))
+                print("        %s" % rec)
+                if plen == wantlen:
+                    print("        they agree now; the record is stale")
+                    bad += 1
         if known is not None:
             # An inverted check: this pair is recorded as differing, so
             # agreement is the failure. A recorded difference that has
