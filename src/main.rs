@@ -197,8 +197,35 @@ fn read_file(path: &str) -> Result<Vec<u8>, String> {
     // and `make overread` is the gate on that.
     let mut v = std::fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
     v.shrink_to_fit();
+    planted_overread(&v);
     Ok(v)
 }
+
+// The gate behind `make overread`, compiled only under the plant_overread feature.
+//
+// Rust bounds-checks a slice, so the C failure mode this collection
+// keeps finding -- a buffer rounded up past its data, which turns the
+// sanitizer off for everything between the end of the data and the end
+// of the allocation -- has no equivalent here as long as every read
+// goes through a slice whose length is the length of the data. That is
+// a claim about this program and not about the language: a Vec carries
+// a capacity as well as a length, and code that passed a capacity
+// around would have the same hole.
+//
+// So the claim is measured rather than asserted. The planted read is
+// one past the end of the file buffer, the gate requires the process to
+// die at that index with a message naming it, and the suite separately
+// counts the occurrences in src of the keyword that would let an index
+// skip its check, which has to be zero for the gate to mean anything.
+#[cfg(feature = "plant_overread")]
+fn planted_overread(v: &[u8]) {
+    eprintln!("certlint: planted read at index {} of {}", v.len(), v.len());
+    let b = v[v.len()];
+    eprintln!("certlint: read {} past the end, which should not happen", b);
+}
+
+#[cfg(not(feature = "plant_overread"))]
+fn planted_overread(_v: &[u8]) {}
 
 // The value an --asn1 line carries, where there is one worth printing. A
 // type whose value is not printed here is a type the comparison against
