@@ -64,29 +64,39 @@ Ranked by how little we control them.
 1. `openssl asn1parse`, `openssl x509 -text -noout`, `openssl verify`.
    OpenSSL's ASN.1 decoder and path builder are the de facto reference for
    the whole ecosystem.
-2. `certtool --certificate-info` and `certtool --verify-chain` from GnuTLS.
-   An independent implementation with an independent ASN.1 library
-   (libtasn1), so it is the one that can contradict OpenSSL.
+2. `certtool --certificate-info` and `certtool --verify` from GnuTLS. An
+   independent implementation with an independent ASN.1 library
+   (libtasn1), so it is the one that can contradict OpenSSL. It does:
+   seven times, every one recorded in the README with the side certlint
+   took. `--verify` rather than `--verify-chain`, which this said at
+   first: `--verify-chain` treats the last certificate in the file as
+   the anchor, where `--verify --load-ca-certificate` asks the same
+   question openssl verify is being asked.
 3. python `cryptography` 43.0.0, which is a Rust ASN.1 parser under a Python
    API. A third opinion, and the easiest one to compare against because it
    returns structured values rather than printed text.
-4. `openssl req`, `openssl x509 -req`, `openssl ca` as corpus generators.
-   Not an oracle for correctness, but the source of certificates nobody here
-   hand-wrote.
+4. `openssl req` and `openssl x509 -req` as corpus generators, plus
+   `t/mkodd.py` for the encodings openssl will not emit. Not oracles for
+   correctness, but the source of certificates nobody here hand-wrote.
+   `openssl ca` is not used; the two above cover everything the corpus
+   needs.
 
 No oracle exists for the Baseline Requirements lint on this machine: zlint
 and certlint (the Ruby one) are not installed and nothing may be downloaded.
 The lint is therefore measured differently, and the README says so: every
 lint finding names the field it fired on, and the suite asserts the field
 value against the three parsers above, so a lint cannot fire on a value
-certlint invented.
+certlint invented. `t/lintcmp.py` goes further and implements each rule a
+second time over cryptography's parse, which does not check the rule but
+does check the value it reads.
 
 ## Non-goals
 
 - CRL and OCSP. No revocation checking at all.
 - TLS. Nothing on this machine opens a socket.
 - Certificate issuance, key generation, signing.
-- DSA and Ed448 signatures.
+- DSA, Ed25519 and Ed448 signatures. RSASSA-PSS is still planned rather
+  than a non-goal.
 - Policy mapping, policy constraints, inhibitAnyPolicy. The policy tree of
   RFC 5280 section 6.1 is not implemented; certificatePolicies is parsed and
   printed but not processed.
@@ -94,152 +104,173 @@ certlint invented.
 
 ## Commit sequence
 
-- [ ] scaffolding: Cargo.toml, Makefile, LICENSE, suite skeleton
+- [x] scaffolding: Cargo.toml, Makefile, LICENSE, suite skeleton
       why: the gate runs `make test` from the first commit, so the harness
       has to exist before the code does.
-- [ ] der: identifier and length octets, with the DER minimal-length rule
+- [x] der: identifier and length octets, with the DER minimal-length rule
       why: every later parser is a caller of this, and the minimal-length
       rule is the first place a BER-tolerant decoder goes wrong.
-- [ ] der: a reader over a slice, with nesting and a sticky error
+- [x] der: a reader over a slice, with nesting and a sticky error
       why: one chokepoint for every read means a hostile file produces a
       diagnostic rather than a panic, and it is the thing to mutate later.
-- [ ] der: INTEGER, with the no-redundant-leading-octet rule and negatives
+- [x] der: INTEGER, with the no-redundant-leading-octet rule and negatives
       why: serial numbers are the one field where a sign bug is invisible,
       and openssl and certtool already disagree about printing one.
-- [ ] der: BOOLEAN, NULL, OBJECT IDENTIFIER
+- [x] der: BOOLEAN, NULL, OBJECT IDENTIFIER
       why: BOOLEAN under DER is 0x00 or 0xFF and nothing else; an OID arc
       needs the minimal-base-128 rule for the same reason as a length.
-- [ ] der: BIT STRING and OCTET STRING
+- [x] der: BIT STRING and OCTET STRING
       why: the unused-bits octet is load-bearing for KeyUsage.
-- [ ] der: the string types and their character set rules
+- [x] der: the string types and their character set rules
       why: PrintableString has a 74-character alphabet that nobody checks,
       and a T61String is not UTF-8 however much it looks like it.
-- [ ] oid: the name table and the dotted-decimal fallback
+- [x] oid: the name table and the dotted-decimal fallback
       why: an unknown OID must print as numbers, never as a guess.
-- [ ] cli: --asn1, printing offset, depth, tag, length, header length
+- [x] cli: --asn1, printing offset, depth, tag, length, header length
       why: the first output that an oracle can read, so the first commit
       that can be checked against something outside.
-- [ ] t: corpus generator, the ordinary certificates
+- [x] t: corpus generator, the ordinary certificates
       why: nothing can be compared until there are files nobody here wrote
       by hand.
-- [ ] t: --asn1 against openssl asn1parse, TLV by TLV
+- [x] t: --asn1 against openssl asn1parse, TLV by TLV
       why: proves the decoder agrees on structure before any field means
       anything.
-- [ ] time: UTCTime and GeneralizedTime, including the 2050 rule
+- [x] time: UTCTime and GeneralizedTime, including the 2050 rule
       why: RFC 5280 makes the encoding depend on the year, and the boundary
       is exactly where a parser that handles one format well breaks.
-- [ ] name: RDNSequence, AttributeTypeAndValue, RFC 4514 output
+- [x] name: RDNSequence, AttributeTypeAndValue, RFC 4514 output
       why: the DN is compared by three oracles that print it three ways, so
       it has to be a value and not a string.
-- [ ] cert: TBSCertificate, version, serial, signature algorithm
+- [x] cert: TBSCertificate, version, serial, signature algorithm
       why: the spine everything else hangs from.
-- [ ] cert: SubjectPublicKeyInfo, RSA and EC parameters, key size
+- [x] cert: SubjectPublicKeyInfo, RSA and EC parameters, key size
       why: key size is a lint input and a field all three oracles print.
-- [ ] cert: the extension list, criticality, unknown extensions
+- [x] cert: the extension list, criticality, unknown extensions
       why: an unrecognised critical extension changes the verdict, so it
       cannot be skipped quietly.
-- [ ] ext: BasicConstraints
+- [x] ext: BasicConstraints
       why: the extension path building is built on.
-- [ ] ext: KeyUsage, with the unused-bits trap
+- [x] ext: KeyUsage, with the unused-bits trap
       why: a nine-bit KeyUsage is two octets and decipherOnly is the bit
       that gets dropped.
-- [ ] ext: ExtendedKeyUsage
+- [x] ext: ExtendedKeyUsage
       why: purpose checking needs it, and anyExtendedKeyUsage is a special
       case.
-- [ ] ext: GeneralName, all nine alternatives
+- [x] ext: GeneralName, all nine alternatives
       why: SAN and NameConstraints both decode it, and the context tags are
       primitive where the type is a string and constructed where it is not.
-- [ ] ext: SubjectAltName and IssuerAltName
+- [x] ext: SubjectAltName and IssuerAltName
       why: the field browsers actually match on.
-- [ ] ext: NameConstraints
+- [x] ext: NameConstraints
       why: the permitted and excluded subtree trees that path validation
       intersects.
-- [ ] ext: AKI, SKI, CRLDistributionPoints, AIA, certificatePolicies
+- [x] ext: AKI, SKI, CRLDistributionPoints, AIA, certificatePolicies
       why: AKI is the hint path building orders candidates by, and the rest
       are lint inputs.
-- [ ] cli: --dump
+- [x] cli: --dump
       why: the output the field-by-field comparison reads.
-- [ ] t: --dump against python cryptography, field by field
+- [x] t: --dump against python cryptography, field by field
       why: structured values, so the comparison is on the value and not on
       a format.
-- [ ] t: --dump against openssl x509 -text
+- [x] t: --dump against openssl x509 -text
       why: a second parser, and the one whose output everybody else copies.
-- [ ] t: --dump against certtool --certificate-info
+- [x] t: --dump against certtool --certificate-info
       why: libtasn1 is genuinely independent of OpenSSL, so this is the
       comparison that can find a shared assumption.
-- [ ] t: corpus of awkward certificates
+- [x] t: corpus of awkward certificates
       why: a name-constraints test on a corpus with no name constraints
       passes vacuously, so the constructs have to be counted and the counts
       printed.
-- [ ] t: record where OpenSSL and GnuTLS disagree
+- [x] t: record where OpenSSL and GnuTLS disagree
       why: a disagreement between two oracles is a finding, not noise to be
       averaged away.
-- [ ] hash: SHA-1, SHA-256, SHA-384, SHA-512
+- [x] hash: SHA-1, SHA-256, SHA-384, SHA-512
       why: signature verification needs a digest and there is no crate.
-- [ ] bignum: the modular arithmetic signature verification needs
+- [x] bignum: the modular arithmetic signature verification needs
       why: RSA is a modexp and ECDSA is a scalar multiplication; both need
       a bignum nobody wrote for us.
-- [ ] sig: RSA PKCS#1 v1.5 verification
+- [x] sig: RSA PKCS#1 v1.5 verification
       why: most of the corpus is signed this way, and the padding check is
       where the forgeries live.
-- [ ] sig: ECDSA over P-256 and P-384
+- [x] sig: ECDSA over P-256 and P-384
       why: the other half of the real world, and the signature encoding is
       a DER SEQUENCE of two INTEGERs that must itself be strict.
 - [ ] sig: RSASSA-PSS
       why: MGF1 and the salt length, and because openssl will sign with it
-      on request.
-- [ ] t: every signature in the corpus against openssl dgst -verify
+      on request. Still not written. A certificate signed this way is
+      reported as unsupported, which the signature comparison counts
+      apart from a disagreement, and the count is 0 only because the
+      corpus holds none: the corpus has to grow a PSS certificate in the
+      same commit or the feature will look tested when it is not.
+- [x] t: every signature in the corpus against openssl dgst -verify
       why: a verifier that accepts everything passes any test made only of
       valid signatures, so the suite flips bits and requires a rejection.
-- [ ] path: the candidate issuer index, by subject
+- [x] path: the candidate issuer index, by subject
       why: several certificates can share a subject, which is the case the
       naive implementation gets wrong.
-- [ ] path: depth-first search with backtracking and loop detection
+- [x] path: depth-first search with backtracking and loop detection
       why: taking the first matching issuer is the bug this project exists
       to not have.
-- [ ] path: candidate ordering by AKI, validity and key identifier
+- [x] path: candidate ordering by AKI, validity and key identifier
       why: ordering changes which valid path is found first, and a
       cross-signed root makes two valid answers.
-- [ ] path: validity windows at a given instant
+- [x] path: validity windows at a given instant
       why: --at is what makes an expired intermediate testable without
       waiting.
-- [ ] path: basic constraints, CA flag and pathlen
+- [x] path: basic constraints, CA flag and pathlen
       why: a pathlen that is exceeded must fail, and the count excludes
       self-issued certificates.
-- [ ] path: keyCertSign and the purpose check
+- [x] path: keyCertSign and the purpose check
       why: an issuer without keyCertSign is not an issuer.
-- [ ] path: name constraints, permitted and excluded, per name type
+- [x] path: name constraints, permitted and excluded, per name type
       why: the state has to be carried down the chain and intersected, not
       checked once.
-- [ ] t: chain decisions against openssl verify
+- [x] t: chain decisions against openssl verify
       why: the decision, not the path: openssl prints one error, we print
       the path we tried.
-- [ ] t: chain decisions against certtool --verify-chain
+- [x] t: chain decisions against certtool --verify-chain
       why: GnuTLS builds paths differently and will not always agree.
-- [ ] t: the cross-signed and multiple-candidate scenarios
+- [x] t: the cross-signed and multiple-candidate scenarios
       why: the whole point of the path builder, and the place a vacuous
       pass is most likely.
-- [ ] lint: serial number, positive, not zero, 64 bits of entropy
+- [x] lint: serial number, positive, not zero, 64 bits of entropy
       why: the BR rule with a measurable input.
-- [ ] lint: validity period caps
+- [x] lint: validity period caps
       why: 398 days for a server certificate, and the arithmetic is on the
       dates the oracles already agree about.
-- [ ] lint: required and forbidden extensions, per certificate type
+- [x] lint: required and forbidden extensions, per certificate type
       why: a CA certificate without basicConstraints is a different defect
       from a leaf with it.
-- [ ] lint: name encoding, SAN presence, wildcards, IP address length
+- [x] lint: name encoding, SAN presence, wildcards, IP address length
       why: the encoding rules are per name type and each has its own trap.
-- [ ] lint: subject DN rules and the commonName-in-SAN requirement
+- [x] lint: subject DN rules and the commonName-in-SAN requirement
       why: a commonName that is not in the SAN is the classic finding.
-- [ ] t: mutation run over the parser and the path builder
+- [x] t: mutation run over the parser and the path builder
       why: a test that cannot fail is the defect this collection keeps
       finding; survivors get written down, including the equivalent ones.
-- [ ] t: truncation and corruption sweep
+- [x] t: truncation and corruption sweep
       why: a certificate is attacker-controlled input in every program that
       reads one.
-- [ ] overread: the planted one-past-the-end read, as a gate
+- [x] overread: the planted one-past-the-end read, as a gate
       why: Rust bounds-checks a slice, so the claim is that nothing here
       carries a length beside a buffer; the gate is what makes it a measured
       claim rather than a language slogan.
-- [ ] README with the measured numbers and what does not work
+- [x] README with the measured numbers and what does not work
       why: a README that only lists successes is not finished.
+- [ ] lint: a key size floor, and the BR policy identifiers
+      why: two of the easiest Baseline Requirements rules to check are
+      missing, and the README says so. key_bits is already a --dump field
+      all three parsers agree on, and certificatePolicies is already
+      parsed, so both are rules over values that have an oracle.
+- [ ] lint: the wildcard-above-a-public-suffix rule, or a note saying why not
+      why: BR 7.1.4.2.1 forbids a wildcard directly left of a
+      registry-controlled label, and there is no public suffix list on this
+      machine and nothing may be downloaded. Either it gets a list from
+      somewhere defensible or the README stops implying it is a gap that
+      will close.
+- [ ] t: a PSS and an Ed25519 certificate in the corpus, as refusals
+      why: the unsupported-algorithm path is currently reached by nothing,
+      which is the same vacuity the lint coverage check exists to catch.
+      openssl can sign with both, so the certificates are cheap, and the
+      suite would then measure a refusal against an oracle that accepts
+      rather than assuming one.
