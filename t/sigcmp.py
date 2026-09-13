@@ -81,6 +81,13 @@ def sig_alg(path):
     return ALG.get(m.group(1)) if m else None
 
 
+def sig_alg_name(path):
+    r = run(["openssl", "x509", "-in", path, "-noout", "-text"])
+    m = re.search(r"^\s*Signature Algorithm: (\S+)",
+                  r.stdout.decode("utf-8", "surrogateescape"), re.M)
+    return m.group(1) if m else "?"
+
+
 def openssl_verify(issuer, tbs, sig, alg, work):
     pub = os.path.join(work, "pub.pem")
     r = run(["openssl", "x509", "-in", issuer, "-pubkey", "-noout"])
@@ -123,12 +130,39 @@ def main(argv):
     unsupported = 0
     refused = 0
     flipped_ok = 0
+    unsup_pairs = 0
+    unsup_skipped = 0
+    unsup_names = set()
     for f in sorted(names):
         for g in sorted(names):
             if names[g]["-subject"] != names[f]["-issuer"]:
                 continue
             alg = sig_alg(f)
             if alg is None:
+                # An algorithm certlint does not implement. Skipping the
+                # pair here is how an unsupported algorithm turns into a
+                # silent pass, so instead: openssl has to accept the
+                # signature, and certlint has to say unsupported rather
+                # than valid or invalid.
+                name = sig_alg_name(f)
+                ok = run(["openssl", "verify", "-partial_chain", "-CAfile",
+                          g, f]).returncode == 0
+                got = ours(binary, f, g)
+                if not ok:
+                    # Two certificates here share a subject with
+                    # different keys, so a candidate issuer that did not
+                    # sign this certificate is an ordinary miss and not
+                    # a finding.
+                    unsup_skipped += 1
+                    continue
+                unsup_pairs += 1
+                if got is not None:
+                    print("    %s is signed with %s and certlint said %r,"
+                          " not unsupported" % (os.path.basename(f), name,
+                                                got))
+                    bad += 1
+                else:
+                    unsup_names.add(name)
                 continue
             der = der_of(f)
             if der is None:
@@ -179,6 +213,15 @@ def main(argv):
     if refused:
         print("    %d certificates refused by certlint before any signature"
               " was checked" % refused)
+    print("    %d signatures in an algorithm certlint does not implement,"
+          " accepted by openssl and reported unsupported by certlint: %s"
+          % (unsup_pairs, " ".join(sorted(unsup_names)) or "none"))
+    if unsup_skipped:
+        print("    %d more pairs whose subject matched an issuer that did"
+              " not sign them" % unsup_skipped)
+    if unsup_pairs == 0:
+        print("    the unsupported path is reached by nothing in the corpus")
+        bad += 1
     return min(bad, 125)
 
 

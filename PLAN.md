@@ -268,7 +268,7 @@ does check the value it reads.
       machine and nothing may be downloaded. Either it gets a list from
       somewhere defensible or the README stops implying it is a gap that
       will close.
-- [ ] t: a PSS and an Ed25519 certificate in the corpus, as refusals
+- [x] t: a PSS and an Ed25519 certificate in the corpus, as refusals
       why: the unsupported-algorithm path is currently reached by nothing,
       which is the same vacuity the lint coverage check exists to catch.
       openssl can sign with both, so the certificates are cheap, and the

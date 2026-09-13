@@ -101,6 +101,12 @@ def scenarios():
          ["cross-rsa"], None, []),
         ("cross-signed, both paths available", "leaf-cross",
          ["root-rsa", "root-cross"], ["cross-rsa"], None, []),
+        # Two algorithms certlint does not implement. Both oracles
+        # accept these chains and certlint refuses them for want of a
+        # verifier, which is a refusal and is counted as one.
+        ("an RSASSA-PSS signature", "sig-pss", ["root-rsa"], [], None, []),
+        ("a leaf under an Ed25519 root", "leaf-ed25519", ["root-ed25519"],
+         [], None, []),
         # --purpose. openssl spells the same four purposes differently and
         # its -purpose also applies the key usage rules that go with each,
         # so these are the scenarios most likely to produce a real
@@ -271,6 +277,7 @@ def main(argv):
     bad = 0
     n = 0
     lengths = {}
+    unsupported = 0
     for (name, leaf, anchors, untrusted, attime, extra, purpose,
          known) in scenarios():
         want, why, wantlen = openssl_verdict(leaf, anchors, untrusted,
@@ -304,6 +311,12 @@ def main(argv):
             if got == want:
                 print("        they agree now; the record is stale")
                 bad += 1
+            continue
+        if not got and want and "unsupported" in ourwhy:
+            # An algorithm certlint has no verifier for. A refusal, not
+            # a wrong answer, and never added to the disagreements.
+            unsupported += 1
+            print("    refused as unsupported %s: %s" % (name, ourwhy))
             continue
         if got != want:
             bad += 1
@@ -346,8 +359,12 @@ def main(argv):
     if short != 2 or long_ != 3:
         print("    wanted 2 and 3; one of the two paths was not built")
         bad += 1
-    print("    %d chain decisions against openssl verify, %d disagreed"
-          % (n, bad))
+    print("    %d chain decisions against openssl verify, %d disagreed, "
+          "%d refused by certlint for want of a verifier" % (n, bad,
+                                                             unsupported))
+    if unsupported == 0:
+        print("    no scenario reaches an algorithm certlint cannot verify")
+        bad += 1
     return min(bad, 125)
 
 

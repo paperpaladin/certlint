@@ -95,6 +95,7 @@ def main(argv):
     n = 0
     skipped = []
     splits = []
+    unsupported = 0
     for (name, leaf, anchors, untrusted, attime, extra, purpose,
          known) in chaincmp.scenarios():
         if attime is not None:
@@ -109,6 +110,11 @@ def main(argv):
         n += 1
         if ossl != gnutls:
             splits.append((name, ossl, gnutls, owhy, gwhy, got))
+            continue
+        if not got and gnutls and "unsupported" in ourwhy:
+            # Same refusal as in chaincmp: an algorithm with no verifier
+            # here. Counted apart from a wrong answer.
+            unsupported += 1
             continue
         if got != gnutls:
             bad += 1
@@ -146,8 +152,9 @@ def main(argv):
         print("    %d scenarios not put to certtool, which has no -attime: %s"
               % (len(skipped), "; ".join(skipped)))
     print("    %d chain decisions against certtool --verify, %d disagreed, "
-          "%d where the two oracles disagree with each other"
-          % (n, bad, len(splits)))
+          "%d refused by certlint for want of a verifier, %d where the two "
+          "oracles disagree with each other"
+          % (n, bad, unsupported, len(splits)))
     return min(bad, 125)
 
 

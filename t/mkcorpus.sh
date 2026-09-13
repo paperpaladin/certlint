@@ -584,6 +584,47 @@ req "/C=GB/O=certlint/CN=ekuc.example.com" rsa:2048 leaf-eku
 sign leaf-eku inter-eku ekuleaf.ext 90
 rm -f ekuca.ext ekuleaf.ext
 
+# Two signatures certlint does not implement, so that the unsupported
+# path is reached by something. A verifier that reports unsupported for
+# an algorithm nothing in the corpus uses has not been tested at all,
+# and the failure mode of a missing feature is not a missing message,
+# it is quietly treating the certificate as valid.
+cat > unsup.ext <<'X'
+[ v3 ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+subjectAltName = DNS:unsupported.example.com
+X
+req "/C=GB/O=certlint/CN=unsupported.example.com" rsa:2048 sig-pss
+openssl x509 -req -in sig-pss.csr -CA root-rsa.pem -CAkey root-rsa.key \
+    -set_serial "$(bigserial)" -days 90 -sha256 \
+    -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 \
+    -extfile unsup.ext -extensions v3 -out sig-pss.pem >/dev/null 2>&1
+
+cat > edca.ext <<'X'
+[ req ]
+distinguished_name = dn
+prompt = no
+[ dn ]
+CN = unused
+[ v3 ]
+basicConstraints = critical,CA:TRUE,pathlen:0
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+X
+openssl genpkey -algorithm ed25519 -out root-ed25519.key >/dev/null 2>&1
+openssl req -new -x509 -key root-ed25519.key -out root-ed25519.pem \
+    -subj "/C=GB/O=certlint/CN=certlint Ed25519 Root" -days 3650 \
+    -extensions v3 -config edca.ext >/dev/null 2>&1
+req "/C=GB/O=certlint/CN=ed25519.example.com" rsa:2048 leaf-ed25519
+openssl x509 -req -in leaf-ed25519.csr -CA root-ed25519.pem \
+    -CAkey root-ed25519.key -set_serial "$(bigserial)" -days 90 \
+    -extfile unsup.ext -extensions v3 -out leaf-ed25519.pem >/dev/null 2>&1
+rm -f unsup.ext edca.ext
+
 # A critical extension nobody knows, which RFC 5280 6.1.4 says must make a
 # validator refuse the path, and an empty subject with a critical SAN,
 # which is how a certificate with no DN at all is meant to be written.
