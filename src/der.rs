@@ -41,7 +41,6 @@ pub fn err<T>(at: usize, msg: impl Into<String>) -> Result<T> {
 pub const CLASS_UNIVERSAL: u8 = 0;
 pub const CLASS_APPLICATION: u8 = 1;
 pub const CLASS_CONTEXT: u8 = 2;
-pub const CLASS_PRIVATE: u8 = 3;
 
 // Universal tag numbers that appear in a certificate.
 pub const T_BOOLEAN: u32 = 1;
@@ -71,14 +70,6 @@ pub struct Tag {
 }
 
 impl Tag {
-    pub fn universal(number: u32) -> Tag {
-        Tag {
-            class: CLASS_UNIVERSAL,
-            constructed: number == T_SEQUENCE || number == T_SET,
-            number,
-        }
-    }
-
     pub fn context(number: u32, constructed: bool) -> Tag {
         Tag {
             class: CLASS_CONTEXT,
@@ -89,10 +80,6 @@ impl Tag {
 
     pub fn is(&self, class: u8, number: u32) -> bool {
         self.class == class && self.number == number
-    }
-
-    pub fn is_universal(&self, number: u32) -> bool {
-        self.is(CLASS_UNIVERSAL, number)
     }
 
     // The name openssl asn1parse prints, so the comparison can be on a name

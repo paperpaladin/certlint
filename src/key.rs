@@ -10,7 +10,7 @@
 // verifier the numbers it needs.
 
 use crate::cert::AlgId;
-use crate::der::{err, Oid, Reader, Result, Tlv, CLASS_UNIVERSAL, T_BIT_STRING, T_SEQUENCE};
+use crate::der::{err, Oid, Reader, Result, CLASS_UNIVERSAL, T_BIT_STRING, T_SEQUENCE};
 use crate::oid;
 
 pub enum Key<'a> {
@@ -33,9 +33,7 @@ pub enum Key<'a> {
 }
 
 pub struct Spki<'a> {
-    pub der: &'a [u8],
     pub alg: AlgId<'a>,
-    pub bit_string: Tlv<'a>,
     pub key: Key<'a>,
 }
 
@@ -139,9 +137,7 @@ impl<'a> Spki<'a> {
             Key::Opaque { bits }
         };
         Ok(Spki {
-            der,
             alg,
-            bit_string: bs,
             key,
         })
     }

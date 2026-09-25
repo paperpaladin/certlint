@@ -74,9 +74,6 @@ pub const KP_ANY: &str = "2.5.29.37.0";
 
 // Policies named by the Baseline Requirements.
 pub const CPS_URI: &str = "1.3.6.1.5.5.7.2.1";
-pub const UNOTICE: &str = "1.3.6.1.5.5.7.2.2";
-pub const AD_OCSP: &str = "1.3.6.1.5.5.7.48.1";
-pub const AD_CA_ISSUERS: &str = "1.3.6.1.5.5.7.48.2";
 pub const POLICY_ANY: &str = "2.5.29.32.0";
 pub const POLICY_DV: &str = "2.23.140.1.2.1";
 pub const POLICY_OV: &str = "2.23.140.1.2.2";
@@ -187,14 +184,6 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("1.3.6.1.4.1.311.60.2.1.3", "jurisdictionCountryName", ""),
 ];
 
-// The name, or None. A caller that prints must fall back to dotted decimal:
-// an OID we do not know is a number, and guessing at it is how a tool ends
-// up naming the wrong extension.
-pub fn name(oid: &Oid) -> Option<&'static str> {
-    let d = oid.dotted();
-    TABLE.iter().find(|e| e.0 == d).map(|e| e.1)
-}
-
 pub fn name_or_dotted(oid: &Oid) -> String {
     let d = oid.dotted();
     match TABLE.iter().find(|e| e.0 == d) {
@@ -211,10 +200,6 @@ pub fn dn_short(oid: &Oid) -> String {
         Some(e) => e.2.to_string(),
         None => d,
     }
-}
-
-pub fn is(oid: &Oid, dotted: &str) -> bool {
-    oid.dotted() == dotted
 }
 
 // Every dotted string in the table, for the suite to hand to openssl and to

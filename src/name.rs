@@ -24,7 +24,6 @@ pub struct Atv<'a> {
 }
 
 pub struct Name<'a> {
-    pub der: &'a [u8],
     // In encoded order, each entry being one RDN's attributes.
     pub rdns: Vec<Vec<Atv<'a>>>,
     // DER wants the members of a SET OF sorted by their encodings. Recorded
@@ -75,37 +74,15 @@ impl<'a> Name<'a> {
             rdns.push(atvs);
         }
         Ok(Name {
-            der,
             rdns,
             set_ordered,
         })
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rdns.is_empty()
     }
 
     pub fn attribute_count(&self) -> usize {
         self.rdns.iter().map(|r| r.len()).sum()
     }
 
-    // Every attribute with this type, in encoded order.
-    pub fn values_of(&self, dotted: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        for rdn in &self.rdns {
-            for a in rdn {
-                if a.oid.dotted() == dotted {
-                    out.push(a.text.clone().unwrap_or_else(|| hexstring(&a.value)));
-                }
-            }
-        }
-        out
-    }
-
-    // RFC 4514. The RDNs come out in the reverse of their encoded order,
-    // the attributes within one RDN are joined with +, and a value that is
-    // not a string type is written as # followed by the hex of its whole
-    // encoding, which is what section 2.4 says to do with an ANY.
     pub fn rfc4514(&self) -> String {
         let mut parts = Vec::new();
         for rdn in self.rdns.iter().rev() {

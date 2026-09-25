@@ -35,7 +35,6 @@ impl<'a> AlgId<'a> {
 }
 
 pub struct Cert<'a> {
-    pub der: &'a [u8],
     // The exact bytes the signature covers, tag and length included.
     pub tbs_der: &'a [u8],
     pub version: u8,
@@ -160,7 +159,6 @@ impl<'a> Cert<'a> {
         let signature = &sig.value[1..];
 
         Ok(Cert {
-            der,
             tbs_der,
             version,
             version_redundant,

@@ -25,24 +25,6 @@ impl Alg {
         }
     }
 
-    pub fn len(&self) -> usize {
-        match self {
-            Alg::Sha1 => 20,
-            Alg::Sha256 => 32,
-            Alg::Sha384 => 48,
-            Alg::Sha512 => 64,
-        }
-    }
-
-    pub fn from_name(s: &str) -> Option<Alg> {
-        match s {
-            "sha1" => Some(Alg::Sha1),
-            "sha256" => Some(Alg::Sha256),
-            "sha384" => Some(Alg::Sha384),
-            "sha512" => Some(Alg::Sha512),
-            _ => None,
-        }
-    }
 }
 
 pub fn digest(alg: Alg, data: &[u8]) -> Vec<u8> {

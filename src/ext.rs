@@ -71,10 +71,6 @@ impl<'a> Exts<'a> {
         self.list.iter().find(|e| e.oid.dotted() == dotted)
     }
 
-    pub fn count(&self, dotted: &str) -> usize {
-        self.list.iter().filter(|e| e.oid.dotted() == dotted).count()
-    }
-
     // RFC 5280 4.2: a certificate must not include more than one instance
     // of an extension. Returned as a list so the linter can name them.
     pub fn duplicates(&self) -> Vec<String> {
@@ -221,11 +217,7 @@ impl KeyUsage {
     }
 }
 
-pub const KU_DIGITAL_SIGNATURE: usize = 0;
-pub const KU_KEY_ENCIPHERMENT: usize = 2;
-pub const KU_KEY_AGREEMENT: usize = 4;
 pub const KU_KEY_CERT_SIGN: usize = 5;
-pub const KU_CRL_SIGN: usize = 6;
 
 // ---------------------------------------------------------------------------
 // ExtendedKeyUsage
@@ -255,9 +247,6 @@ impl ExtKeyUsage {
         Ok(ExtKeyUsage { purposes })
     }
 
-    pub fn has(&self, dotted: &str) -> bool {
-        self.purposes.iter().any(|p| p.dotted() == dotted)
-    }
 }
 
 // ---------------------------------------------------------------------------
