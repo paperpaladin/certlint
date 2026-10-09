@@ -59,26 +59,28 @@ every value is compared as a value.
 
 ## What is measured
 
-77 certificates in the corpus, and the suite reports 24 checks. The
+80 certificates in the corpus, and the suite reports 24 checks. The
 figures below are from one run on 20 October 2026.
 
-Structure, against `openssl asn1parse`: 4706 TLVs over 75 files, every one
-agreeing on offset, depth, header length, length and tag. 2219 of the
-printed values are compared as well, 1011 of them OBJECT IDENTIFIERs each
-resolved by asking openssl what it renders that dotted form as.
+Structure, against `openssl asn1parse`: 4920 TLVs over 78 files, every one
+agreeing on offset, depth, header length, length and tag. 2320 of the
+printed values are compared as well, each OBJECT IDENTIFIER resolved by
+asking openssl what it renders that dotted form as.
 
-Fields, against all three parsers: 1564 comparisons against cryptography,
-1305 against openssl, 1010 against certtool, none disagreeing.
+Fields, against all three parsers: 1614 comparisons against cryptography,
+1361 against openssl, 1051 against certtool, none disagreeing.
 
-Chains, against `openssl verify`: 42 scenarios, every verdict agreeing,
+Chains, against `openssl verify`: 44 scenarios, every verdict agreeing,
 and the length of the path built compared too where both accept.
 
-Chains, against `certtool --verify`: 39 of those scenarios, every verdict
+Chains, against `certtool --verify`: 41 of those scenarios, every verdict
 agreeing wherever OpenSSL and GnuTLS agree with each other.
 
 Signatures, against `openssl dgst -verify`: 172 verdicts, 85 of them with
 a bit flipped in the signature and rejected by both. 7 forged PKCS#1 v1.5
-padding blocks, all refused.
+padding blocks, all refused. 3 more signatures in algorithms certlint does
+not implement, RSASSA-PSS and Ed25519: openssl has to accept each one and
+certlint has to answer unsupported rather than valid or invalid.
 
 Digests, against `openssl dgst`: 116 over 29 input lengths. Modular
 exponentiation, against python `pow`: 53. Curve parameters, against
@@ -86,7 +88,8 @@ exponentiation, against python `pow`: 53. Curve parameters, against
 point at infinity on each.
 
 Lint, against the same rules written a second time over cryptography's
-parse: 66 certificates, 24 rules, no disagreement.
+parse: 69 certificates, 24 rules, every one of the rules reached by
+something, no disagreement.
 
 Hostile input: 727 truncated and corrupted files, no panic, no exit status
 the mode cannot produce, no silent refusal.
@@ -104,7 +107,7 @@ six, refusing the non-minimal serial and the non-minimal OID arc. It
 also refuses 7 hand-built malformed strings that openssl parses without
 complaint, and 2 certificates before any signature is checked.
 
-The oracles refuse things too. python cryptography refuses 10 of the 77
+The oracles refuse things too. python cryptography refuses 10 of the 80
 and certtool refuses 3, each named in the output with the reason. It also
 warns rather than refusing on a negative serial, and says it will refuse
 one outright in its next release; the warning is printed, not filtered.
@@ -241,9 +244,11 @@ extensions path validation will accept.
 
 **No DSA, no Ed25519, no Ed448, no RSASSA-PSS.** The PLAN lists PSS and it
 is not written. A certificate signed with any of them is reported as
-unsupported rather than valid, and the signature comparison counts those
-separately from disagreements; the count is currently 0 because the corpus
-holds none.
+unsupported rather than valid, and both the signature and the chain
+comparisons count those apart from disagreements. The corpus holds a PSS
+certificate and an Ed25519 root so that the unsupported branch is reached:
+until they were added the comparison reported 0 unsupported, which read as
+a good number and meant the branch had never run.
 
 **No Baseline Requirements oracle.** zlint is not installed, the Ruby
 certlint is not installed and nothing may be downloaded here, so nothing
